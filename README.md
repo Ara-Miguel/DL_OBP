@@ -6,7 +6,7 @@
 
 ## Data Source
 
-This data is all built on the **Driveline Open Biomechanics Project (OBP)** — publicly available force plate data from baseball athletes across the development pipeline. We're working with 1,934 raw sessions across 1,162 unique athletes, collapsed down to one averaged record per athlete after cleaning.
+This data is all built on the **Driveline Open Biomechanics Project (OBP)** — publicly available force plate data from baseball athletes across the development pipeline (specifically https://github.com/drivelineresearch/openbiomechanics/tree/main/high_performance). We're working with 1,934 raw sessions across 1,162 unique athletes, collapsed down to one averaged record per athlete after cleaning.
 
 A handful of artifacts were flagged and fixed before any analysis ran:
 - Three RSI-Modified values were nulled out — they were physically impossible (>30 m/s)
