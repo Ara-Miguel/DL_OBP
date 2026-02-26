@@ -1,0 +1,459 @@
+---
+title: "Force Plate — Physical Capacity Profile"
+output:
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: scroll
+    self_contained: true
+    navbar:
+      - { title: "Body Weight · Relative Strength · Peak Power · IMTP · 1,162 Athletes", align: left }
+---
+
+```{r setup, include=FALSE}
+# =============================================================================
+# DASHBOARD 3 OF 4: Physical Capacity Profile
+# =============================================================================
+# Purpose : Explore physical development profiles across levels.
+#           Key analyses:
+#           - Body weight distribution by level
+#           - Relative strength vs peak power/BM quadrant analysis
+#           - Body weight vs CMJ jump height
+#           - Relative strength vs IMTP peak force (r=0.722)
+#           - Peak power/BM vs CMJ jump height (r=0.956)
+#           - Physical profile by level (radar/summary)
+#
+# Run after: cleaning pipeline
+# =============================================================================
+
+library(flexdashboard)
+library(tidyverse)
+library(DT)
+library(plotly)
+
+PROJECT_DIR <- here::here()
+
+
+df <- read_csv(
+  file.path(PROJECT_DIR, "hp_obp_combined.csv"),
+  show_col_types = FALSE) |>
+  mutate(
+    playing_level = factor(playing_level,
+                           levels = c("High School", "College", "Pro")),
+    # Quadrant classification
+    rs_med = median(relative_strength, na.rm = TRUE),
+    pp_med = median(`peak_power_/_bm_[w/kg]_mean_cmj`, na.rm = TRUE),
+    quadrant = case_when(
+      relative_strength >= rs_med & `peak_power_/_bm_[w/kg]_mean_cmj` >= pp_med ~ "High RS / High PP",
+      relative_strength >= rs_med & `peak_power_/_bm_[w/kg]_mean_cmj` <  pp_med ~ "High RS / Low PP",
+      relative_strength <  rs_med & `peak_power_/_bm_[w/kg]_mean_cmj` >= pp_med ~ "Low RS / High PP",
+      relative_strength <  rs_med & `peak_power_/_bm_[w/kg]_mean_cmj` <  pp_med ~ "Low RS / Low PP",
+      TRUE ~ NA_character_
+    )
+  )
+
+COL_INK    <- "#1a1a18"
+COL_BG     <- "#f2f0eb"
+COL_PAPER  <- "#faf8f3"
+COL_BORDER <- "#ccc9c0"
+COL_MUTED  <- "#8a8880"
+COL_HS     <- "#2563a8"
+COL_COL    <- "#1a6b3c"
+COL_PRO    <- "#c0392b"
+LEVEL_COLS <- c("High School" = COL_HS, "College" = COL_COL, "Pro" = COL_PRO)
+QUAD_COLS  <- c(
+  "High RS / High PP" = "#1a6b3c",
+  "High RS / Low PP"  = "#2563a8",
+  "Low RS / High PP"  = "#c07a1a",
+  "Low RS / Low PP"   = "#8a8880"
+)
+
+rs_med_val <- median(df$relative_strength, na.rm = TRUE)
+pp_med_val <- median(df$`peak_power_/_bm_[w/kg]_mean_cmj`, na.rm = TRUE)
+n_rs       <- sum(!is.na(df$relative_strength))
+
+# ── Data quality thresholds ───────────────────────────────────────────────────
+CMJ_JH_HARD <- 75; CMJ_JH_FLAG <- 60
+SJ_JH_HARD  <- 65; SJ_JH_FLAG  <- 55
+HT_JH_HARD  <- 55; HT_JH_FLAG  <- 45
+HT_STIFF_SENTINEL <- 99999.99; HT_STIFF_HARD <- 200000; HT_STIFF_FLAG <- 100000
+
+df <- df |>
+  mutate(
+    `jump_height_(imp-mom)_[cm]_mean_cmj` = if_else(
+      `jump_height_(imp-mom)_[cm]_mean_cmj` > CMJ_JH_HARD, NA_real_,
+      `jump_height_(imp-mom)_[cm]_mean_cmj`),
+    `jump_height_(imp-mom)_[cm]_mean_sj` = if_else(
+      `jump_height_(imp-mom)_[cm]_mean_sj` > SJ_JH_HARD, NA_real_,
+      `jump_height_(imp-mom)_[cm]_mean_sj`),
+    `best_jump_height_(flight_time)_[cm]_mean_ht` = if_else(
+      `best_jump_height_(flight_time)_[cm]_mean_ht` > HT_JH_HARD, NA_real_,
+      `best_jump_height_(flight_time)_[cm]_mean_ht`),
+    `best_active_stiffness_[n/m]_mean_ht` = if_else(
+      round(`best_active_stiffness_[n/m]_mean_ht`, 2) == HT_STIFF_SENTINEL |
+        `best_active_stiffness_[n/m]_mean_ht` > HT_STIFF_HARD, NA_real_,
+      `best_active_stiffness_[n/m]_mean_ht`)
+  )
+```
+
+```{css, echo=FALSE}
+body, .dashboard-container {
+  background-color: #faf8f3 !important;
+  font-family: Arial, Calibri, sans-serif !important;
+  color: #1a1a18 !important;
+}
+.navbar {
+  background-color: #1a1a18 !important;
+  border-bottom: 3px solid #c07a1a !important;
+}
+.navbar-brand, .navbar-nav li a {
+  font-size: 11px !important;
+  letter-spacing: 2px !important;
+  text-transform: uppercase !important;
+  color: #cccccc !important;
+}
+.chart-wrapper, .chart-stage {
+  background-color: #faf8f3 !important;
+}
+.value-box { border-radius: 0 !important; border: none !important; }
+.value-box .value {
+  font-family: Arial, Calibri, sans-serif !important;
+  font-size: 30px !important;
+  color: #ffffff !important;
+}
+.value-box .caption {
+  letter-spacing: 2px !important;
+  text-transform: uppercase !important;
+  font-size: 10px !important;
+  color: #ffffff !important;
+}
+.section-label {
+  font-size: 12px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: #555550;
+  padding-top: 10px;
+  margin-bottom: 10px;
+  font-family: Arial, Calibri, sans-serif;
+  font-weight: 600;
+}
+.section-label::before { content: "// "; color: #c07a1a; }
+table.dataTable thead th {
+  background-color: #1a1a18 !important;
+  color: #f0eeea !important;
+  font-size: 11px !important;
+  letter-spacing: 1.5px !important;
+  text-transform: uppercase !important;
+  font-weight: 600 !important;
+  font-family: Arial, Calibri, sans-serif !important;
+  padding: 10px 8px !important;
+}
+table.dataTable tbody td {
+  background-color: #faf8f3 !important;
+  color: #1a1a18 !important;
+  font-size: 12px !important;
+  font-family: Arial, Calibri, sans-serif !important;
+  border-bottom: 1px solid #dedad2 !important;
+  padding: 8px !important;
+}
+table.dataTable tbody tr:nth-child(even) td { background-color: #f2f0eb !important; }
+table.dataTable tbody tr:hover td { background-color: #e8e5de !important; }
+.dataTables_wrapper {
+  background: #ede9e1 !important;
+  padding: 16px !important;
+  border: 1px solid #ccc9c0 !important;
+}
+.dataTables_filter label,
+.dataTables_length label,
+.dataTables_info,
+.dataTables_paginate {
+  color: #333330 !important;
+  font-size: 12px !important;
+  font-family: Arial, Calibri, sans-serif !important;
+}
+.paginate_button { color: #333330 !important; }
+```
+
+Overview 
+=====================================
+
+Row {data-height=520}
+-------------------------------------
+
+### <span class="section-label">Body Weight Distribution by Level</span>
+
+```{r bw-box, fig.width=7, fig.height=5}
+plot_ly(df |> filter(!is.na(`body_weight_[lbs]`)),
+        x = ~playing_level,
+        y = ~`body_weight_[lbs]`,
+        color = ~playing_level, colors = LEVEL_COLS,
+        type = "box", boxpoints = "outliers",
+        marker = list(size = 4, opacity = 0.5),
+        line = list(width = 1.5),
+        text = ~sprintf("Athlete: %s<br>Level: %s<br>BW: %.1f lbs",
+                        athlete_id, playing_level, `body_weight_[lbs]`),
+        hoverinfo = "text") |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "", gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    yaxis = list(title = "Body Weight (lbs)", gridcolor = COL_BORDER,
+                 linecolor = COL_BORDER),
+    showlegend = FALSE,
+    annotations = list(list(
+      x = 0, y = 1.05, xref = "paper", yref = "paper",
+      text = "HS: 155 lbs avg | College: 195 lbs | Pro: 208 lbs — 53-lb gap HS to Pro",
+      showarrow = FALSE, font = list(size = 11, color = '#555550'),
+      xanchor = "left"
+    ))
+  )
+```
+
+### <span class="section-label">Relative Strength Distribution by Level</span>
+
+```{r rs-box, fig.width=7, fig.height=5}
+plot_ly(df |> filter(!is.na(relative_strength)),
+        x = ~playing_level,
+        y = ~relative_strength,
+        color = ~playing_level, colors = LEVEL_COLS,
+        type = "box", boxpoints = "outliers",
+        marker = list(size = 4, opacity = 0.5),
+        line = list(width = 1.5),
+        text = ~sprintf("Athlete: %s<br>Level: %s<br>Rel Strength: %.2f",
+                        athlete_id, playing_level, relative_strength),
+        hoverinfo = "text") |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "", gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    yaxis = list(title = "Relative Strength", gridcolor = COL_BORDER,
+                 linecolor = COL_BORDER),
+    showlegend = FALSE,
+    annotations = list(list(
+      x = 0, y = 1.05, xref = "paper", yref = "paper",
+      text = "HS: 3.18 | College: 3.60 | Pro: 3.53 — College slightly stronger than Pro on average",
+      showarrow = FALSE, font = list(size = 11, color = '#555550'),
+      xanchor = "left"
+    ))
+  )
+```
+
+Quadrant Analysis 
+=====================================
+
+Row {data-height=560}
+-------------------------------------
+
+### <span class="section-label">Relative Strength vs Peak Power/BM — Quadrant Analysis</span>
+
+```{r quadrant, fig.width=13, fig.height=6}
+quad_data <- df |>
+  filter(!is.na(relative_strength),
+         !is.na(`peak_power_/_bm_[w/kg]_mean_cmj`),
+         !is.na(quadrant))
+
+plot_ly(quad_data,
+        x = ~relative_strength,
+        y = ~`peak_power_/_bm_[w/kg]_mean_cmj`,
+        color = ~quadrant, colors = QUAD_COLS,
+        symbol = ~playing_level,
+        symbols = c("High School" = "circle",
+                    "College"     = "square",
+                    "Pro"         = "diamond"),
+        type = "scatter", mode = "markers",
+        marker = list(size = 6, opacity = 0.55),
+        text = ~sprintf("Athlete: %s<br>Level: %s<br>RS: %.2f<br>PP/BM: %.1f W/kg<br>Quadrant: %s",
+                        athlete_id, playing_level,
+                        relative_strength,
+                        `peak_power_/_bm_[w/kg]_mean_cmj`,
+                        quadrant),
+        hoverinfo = "text") |>
+  add_segments(
+    x = rs_med_val, xend = rs_med_val,
+    y = 20, yend = 90,
+    line = list(color = COL_MUTED, dash = "dot", width = 1),
+    showlegend = FALSE, inherit = FALSE
+  ) |>
+  add_segments(
+    x = 1, xend = 7,
+    y = pp_med_val, yend = pp_med_val,
+    line = list(color = COL_MUTED, dash = "dot", width = 1),
+    showlegend = FALSE, inherit = FALSE
+  ) |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "Relative Strength",
+                 gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    yaxis = list(title = "Peak Power / Body Mass (W/kg)",
+                 gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    legend = list(font = list(size = 12, color = '#1a1a18')),
+    annotations = list(
+      list(x = 0, y = 1.05, xref = "paper", yref = "paper",
+           text = "Dotted lines = dataset medians | Symbol = level | Color = quadrant",
+           showarrow = FALSE, font = list(size = 11, color = '#555550'),
+           xanchor = "left"),
+      # Corner labels — placed at plot edges using paper coords
+      list(x = 0.98, y = 0.98, xref = "paper", yref = "paper",
+           text = "HIGH RS / HIGH PP", showarrow = FALSE,
+           font = list(size = 11, color = "#1a6b3c", family = "Arial, Calibri"),
+           xanchor = "right", yanchor = "top"),
+      list(x = 0.02, y = 0.98, xref = "paper", yref = "paper",
+           text = "LOW RS / HIGH PP", showarrow = FALSE,
+           font = list(size = 11, color = "#c07a1a", family = "Arial, Calibri"),
+           xanchor = "left", yanchor = "top"),
+      list(x = 0.98, y = 0.02, xref = "paper", yref = "paper",
+           text = "HIGH RS / LOW PP", showarrow = FALSE,
+           font = list(size = 11, color = "#2563a8", family = "Arial, Calibri"),
+           xanchor = "right", yanchor = "bottom"),
+      list(x = 0.02, y = 0.02, xref = "paper", yref = "paper",
+           text = "LOW RS / LOW PP", showarrow = FALSE,
+           font = list(size = 11, color = "#8a8880", family = "Arial, Calibri"),
+           xanchor = "left", yanchor = "bottom")
+    )
+  )
+```
+
+Key Correlations 
+=====================================
+
+Row {data-height=520}
+-------------------------------------
+
+### <span class="section-label">Peak Power/BM vs CMJ Jump Height (r = 0.956)</span>
+
+```{r pp-jh, fig.width=7, fig.height=5}
+pp_data <- df |>
+  filter(!is.na(`peak_power_/_bm_[w/kg]_mean_cmj`),
+         !is.na(`jump_height_(imp-mom)_[cm]_mean_cmj`))
+
+plot_ly(pp_data,
+        x = ~`peak_power_/_bm_[w/kg]_mean_cmj`,
+        y = ~`jump_height_(imp-mom)_[cm]_mean_cmj`,
+        color = ~playing_level, colors = LEVEL_COLS,
+        type = "scatter", mode = "markers",
+        marker = list(size = 5, opacity = 0.4),
+        text = ~sprintf("Athlete: %s<br>Level: %s<br>PP/BM: %.1f W/kg<br>JH: %.1f cm",
+                        athlete_id, playing_level,
+                        `peak_power_/_bm_[w/kg]_mean_cmj`,
+                        `jump_height_(imp-mom)_[cm]_mean_cmj`),
+        hoverinfo = "text") |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "Peak Power / Body Mass (W/kg)",
+                 gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    yaxis = list(title = "CMJ Jump Height (cm)",
+                 gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    showlegend = TRUE, legend = list(font = list(size = 12, color = '#1a1a18')),
+    annotations = list(list(
+      x = 0, y = 1.05, xref = "paper", yref = "paper",
+      text = "r = 0.956 — strongest physical predictor of CMJ jump height in this dataset",
+      showarrow = FALSE, font = list(size = 11, color = '#555550'),
+      xanchor = "left"
+    ))
+  )
+```
+
+### <span class="section-label">Relative Strength vs IMTP Peak Force (r = 0.722)</span>
+
+```{r rs-imtp, fig.width=7, fig.height=5}
+rs_data <- df |>
+  filter(!is.na(relative_strength),
+         !is.na(`peak_vertical_force_[n]_max_imtp`))
+
+plot_ly(rs_data,
+        x = ~relative_strength,
+        y = ~`peak_vertical_force_[n]_max_imtp`,
+        color = ~playing_level, colors = LEVEL_COLS,
+        type = "scatter", mode = "markers",
+        marker = list(size = 5, opacity = 0.45),
+        text = ~sprintf("Athlete: %s<br>Level: %s<br>RS: %.2f<br>IMTP PVF: %.0f N",
+                        athlete_id, playing_level,
+                        relative_strength,
+                        `peak_vertical_force_[n]_max_imtp`),
+        hoverinfo = "text") |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "Relative Strength",
+                 gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    yaxis = list(title = "IMTP Peak Vertical Force (N)",
+                 gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    showlegend = TRUE, legend = list(font = list(size = 12, color = '#1a1a18')),
+    annotations = list(list(
+      x = 0, y = 1.05, xref = "paper", yref = "paper",
+      text = "r = 0.722 — relative strength is a strong proxy for maximal isometric force capacity",
+      showarrow = FALSE, font = list(size = 11, color = '#555550'),
+      xanchor = "left"
+    ))
+  )
+```
+
+Row {data-height=520}
+-------------------------------------
+
+### <span class="section-label">Body Weight vs CMJ Jump Height (r = 0.502)</span>
+
+```{r bw-jh, fig.width=7, fig.height=5}
+bw_data <- df |>
+  filter(!is.na(`body_weight_[lbs]`),
+         !is.na(`jump_height_(imp-mom)_[cm]_mean_cmj`))
+
+plot_ly(bw_data,
+        x = ~`body_weight_[lbs]`,
+        y = ~`jump_height_(imp-mom)_[cm]_mean_cmj`,
+        color = ~playing_level, colors = LEVEL_COLS,
+        type = "scatter", mode = "markers",
+        marker = list(size = 5, opacity = 0.4),
+        text = ~sprintf("Athlete: %s<br>Level: %s<br>BW: %.1f lbs<br>JH: %.1f cm",
+                        athlete_id, playing_level,
+                        `body_weight_[lbs]`,
+                        `jump_height_(imp-mom)_[cm]_mean_cmj`),
+        hoverinfo = "text") |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "Body Weight (lbs)",
+                 gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    yaxis = list(title = "CMJ Jump Height (cm)",
+                 gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    showlegend = TRUE, legend = list(font = list(size = 12, color = '#1a1a18')),
+    annotations = list(list(
+      x = 0, y = 1.05, xref = "paper", yref = "paper",
+      text = "r = 0.502 — heavier athletes jump higher on average, driven by level confound (Pro heavier + more trained)",
+      showarrow = FALSE, font = list(size = 11, color = '#555550'),
+      xanchor = "left"
+    ))
+  )
+```
+
+### <span class="section-label">Quadrant Counts by Level</span>
+
+```{r quadrant-table}
+quad_tbl <- df |>
+  filter(!is.na(quadrant)) |>
+  count(playing_level, quadrant) |>
+  pivot_wider(names_from = playing_level, values_from = n, values_fill = 0) |>
+  mutate(
+    Total = `High School` + College + Pro,
+    quadrant_fmt = case_when(
+      quadrant == "High RS / High PP" ~
+        '<span style="color:#1a6b3c;font-weight:700">▲ High RS / High PP</span>',
+      quadrant == "High RS / Low PP" ~
+        '<span style="color:#2563a8;font-weight:700">→ High RS / Low PP</span>',
+      quadrant == "Low RS / High PP" ~
+        '<span style="color:#c07a1a;font-weight:700">→ Low RS / High PP</span>',
+      quadrant == "Low RS / Low PP" ~
+        '<span style="color:#8a8880;font-weight:700">▼ Low RS / Low PP</span>'
+    )
+  ) |>
+  select(Quadrant = quadrant_fmt, `High School`, College, Pro, Total)
+
+datatable(
+  quad_tbl,
+  escape = FALSE, rownames = FALSE,
+  options = list(pageLength = 4, dom = "t",
+                 columnDefs = list(list(className = "dt-center",
+                                        targets = c(1,2,3,4))))
+)
+```

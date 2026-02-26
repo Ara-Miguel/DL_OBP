@@ -1,0 +1,817 @@
+---
+title: "Force Plate Performance — Level Comparison"
+output:
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: scroll
+    self_contained: true
+    navbar:
+      - { title: "1,162 Athletes · High School · College · Pro · CMJ / SJ / IMTP / HT", align: left }
+---
+
+```{r setup, include=FALSE}
+# =============================================================================
+# DASHBOARD 1 OF 4: Level Comparison
+# =============================================================================
+# Purpose : Cross-sectional comparison of CMJ and related force plate metrics
+#           across High School, College, and Pro baseball athletes.
+#           Includes box plots, group means, pairwise statistics, and
+#           percentile norms per level.
+#
+# Input   : hp_obp_combined.csv (from cleaning pipeline)
+# Run after: cleaning pipeline
+# =============================================================================
+
+# install.packages(c("flexdashboard","tidyverse","DT","plotly","coin","rstatix"))
+
+library(flexdashboard)
+library(tidyverse)
+library(DT)
+library(plotly)
+
+## ── TITLE ───────────────────────────────────────────────────────────────────
+
+
+PROJECT_DIR <- here::here()
+
+df <- read_csv(
+  file.path(PROJECT_DIR, "hp_obp_combined.csv"),
+  show_col_types = FALSE
+)
+
+# ── Palette ───────────────────────────────────────────────────────────────────
+COL_INK     <- "#1a1a18"
+COL_BG      <- "#f2f0eb"
+COL_PAPER   <- "#faf8f3"
+COL_BORDER  <- "#ccc9c0"
+COL_MUTED   <- "#8a8880"
+COL_HS      <- "#2563a8"   # blue  — High School
+COL_COL     <- "#1a6b3c"   # green — College
+COL_PRO     <- "#c0392b"   # red   — Pro
+LEVEL_COLS  <- c("High School" = COL_HS, "College" = COL_COL, "Pro" = COL_PRO)
+
+# ── CMJ metrics to display ────────────────────────────────────────────────────
+CMJ_METRICS <- list(
+  "Jump Height (cm)"       = "jump_height_(imp-mom)_[cm]_mean_cmj",
+  "RSI-Modified (m/s)"     = "rsi-modified_[m/s]_mean_cmj",
+  "Peak Power/BM (W/kg)"   = "peak_power_/_bm_[w/kg]_mean_cmj",
+  "Eccentric RFD (N/s)"    = "eccentric_braking_rfd_[n/s]_mean_cmj",
+  "LL Stiffness (N/m)"     = "lower-limb_stiffness_[n/m]_mean_cmj",
+  "Conc Peak Force (N)"    = "concentric_peak_force_[n]_mean_cmj",
+  "Peak Power (W)"         = "peak_power_[w]_mean_cmj",
+  "Ecc Peak Force (N)"     = "eccentric_peak_force_[n]_mean_cmj",
+  "CM Depth (cm)"          = "countermovement_depth_[cm]_mean_cmj",
+  "Conc Duration (ms)"     = "concentric_duration_[ms]_mean_cmj",
+  "Ecc Duration (ms)"      = "eccentric_duration_[ms]_mean_cmj"
+)
+
+levels_order <- c("High School", "College", "Pro")
+
+# ── Kruskal-Wallis + pairwise Mann-Whitney ────────────────────────────────────
+compute_stats <- function(col) {
+  groups <- map(levels_order, ~ df |>
+                  filter(playing_level == .x) |>
+                  pull(!!sym(col)) |>
+                  na.omit())
+  names(groups) <- levels_order
+
+  kw <- kruskal.test(groups)
+  pairs <- list(
+    c("High School", "College"),
+    c("College", "Pro"),
+    c("High School", "Pro")
+  )
+  pw <- map_dfr(pairs, function(p) {
+    g1 <- groups[[p[1]]]; g2 <- groups[[p[2]]]
+    test <- wilcox.test(g1, g2, exact = FALSE)
+    p_bonf <- min(test$p.value * 3, 1)
+    sig <- case_when(p_bonf < 0.001 ~ "***", p_bonf < 0.01 ~ "**",
+                     p_bonf < 0.05 ~ "*", TRUE ~ "ns")
+    n <- length(g1) + length(g2)
+    z <- abs(qnorm(test$p.value / 2))
+    tibble(pair = paste(p[1], "vs", p[2]),
+           p_bonf = round(p_bonf, 4), sig = sig,
+           r = round(z / sqrt(n), 3))
+  })
+  list(kw_p = kw$p.value, pairwise = pw, groups = groups)
+}
+
+# ── Percentile norms ──────────────────────────────────────────────────────────
+compute_percentiles <- function(col) {
+  pcts <- c(10, 25, 50, 75, 90)
+  map_dfr(levels_order, function(lv) {
+    g <- df |> filter(playing_level == lv) |> pull(!!sym(col)) |> na.omit()
+    vals <- quantile(g, pcts / 100, na.rm = TRUE)
+    tibble(Level = lv, P10 = vals[1], P25 = vals[2], P50 = vals[3],
+           P75 = vals[4], P90 = vals[5])
+  })
+}
+
+# ── Summary stats table ───────────────────────────────────────────────────────
+summary_stats <- map_dfr(names(CMJ_METRICS), function(label) {
+  col <- CMJ_METRICS[[label]]
+  map_dfr(levels_order, function(lv) {
+    g <- df |> filter(playing_level == lv) |> pull(!!sym(col)) |> na.omit()
+    tibble(Metric = label, Level = lv, N = length(g),
+           Mean = round(mean(g), 2), SD = round(sd(g), 2),
+           Median = round(median(g), 2),
+           P25 = round(quantile(g, 0.25), 2),
+           P75 = round(quantile(g, 0.75), 2))
+  })
+})
+
+n_hs  <- sum(df$playing_level == "High School")
+n_col <- sum(df$playing_level == "College")
+n_pro <- sum(df$playing_level == "Pro")
+
+# ── Data quality thresholds ───────────────────────────────────────────────────
+# Applied consistently across all dashboards
+# HARD MAX: remove from all plots and stats — physiologically implausible
+# FLAG    : keep in plot but mark with amber diamond + hover warning
+CMJ_JH_HARD  <- 75    # cm  — above world-class elite; no baseball athlete plausible
+CMJ_JH_FLAG  <- 60    # cm  — exceptional; flag for review
+SJ_JH_HARD   <- 65    # cm  — SJ always lower than CMJ; above 65 is artifact
+SJ_JH_FLAG   <- 55    # cm
+HT_JH_HARD   <- 55    # cm  — HT from flight time; 127 cm (ATHLETE_0028) = clear error
+HT_JH_FLAG   <- 45    # cm  — P99 = 44.3 cm; above this is exceptional
+HT_STIFF_SENTINEL <- 99999.99   # N/m — Hawkin Dynamics software cap (uncomputable)
+HT_STIFF_HARD     <- 200000     # N/m — physiologically implausible
+HT_STIFF_FLAG     <- 100000     # N/m — elevated; flag for verification
+
+# ── Apply hard thresholds to df globally ─────────────────────────────────────
+# Null out hard-capped values so they propagate cleanly to all stats/charts
+df <- df |>
+  mutate(
+    `jump_height_(imp-mom)_[cm]_mean_cmj` = if_else(
+      `jump_height_(imp-mom)_[cm]_mean_cmj` > CMJ_JH_HARD, NA_real_,
+      `jump_height_(imp-mom)_[cm]_mean_cmj`),
+    `jump_height_(imp-mom)_[cm]_mean_sj` = if_else(
+      `jump_height_(imp-mom)_[cm]_mean_sj` > SJ_JH_HARD, NA_real_,
+      `jump_height_(imp-mom)_[cm]_mean_sj`),
+    `best_jump_height_(flight_time)_[cm]_mean_ht` = if_else(
+      `best_jump_height_(flight_time)_[cm]_mean_ht` > HT_JH_HARD, NA_real_,
+      `best_jump_height_(flight_time)_[cm]_mean_ht`),
+    `best_active_stiffness_[n/m]_mean_ht` = if_else(
+      round(`best_active_stiffness_[n/m]_mean_ht`, 2) == HT_STIFF_SENTINEL |
+        `best_active_stiffness_[n/m]_mean_ht` > HT_STIFF_HARD, NA_real_,
+      `best_active_stiffness_[n/m]_mean_ht`)
+  )
+
+# ── Flag helpers (for charts that colour flagged points separately) ────────────
+flag_cmj_jh  <- function(x) case_when(x > CMJ_JH_FLAG  ~ "flagged", !is.na(x) ~ "valid", TRUE ~ NA_character_)
+flag_sj_jh   <- function(x) case_when(x > SJ_JH_FLAG   ~ "flagged", !is.na(x) ~ "valid", TRUE ~ NA_character_)
+flag_ht_jh   <- function(x) case_when(x > HT_JH_FLAG   ~ "flagged", !is.na(x) ~ "valid", TRUE ~ NA_character_)
+flag_ht_stiff<- function(x) case_when(x > HT_STIFF_FLAG ~ "flagged", !is.na(x) ~ "valid", TRUE ~ NA_character_)
+```
+
+```{css, echo=FALSE}
+body, .dashboard-container {
+  background-color: #faf8f3 !important;
+  font-family: Arial, Calibri, sans-serif !important;
+  color: #1a1a18 !important;
+}
+.navbar {
+  background-color: #1a1a18 !important;
+  border-bottom: 3px solid #2563a8 !important;
+}
+.navbar-brand, .navbar-nav li a {
+  font-size: 11px !important;
+  letter-spacing: 2px !important;
+  text-transform: uppercase !important;
+  color: #cccccc !important;
+}
+.chart-wrapper, .chart-stage {
+  background-color: #faf8f3 !important;
+}
+.value-box { border-radius: 0 !important; border: none !important; }
+.value-box .value {
+  font-family: Arial, Calibri, sans-serif !important;
+  font-size: 30px !important;
+  color: #ffffff !important;
+}
+.value-box .caption {
+  letter-spacing: 2px !important;
+  text-transform: uppercase !important;
+  font-size: 10px !important;
+  color: #ffffff !important;
+}
+.section-label {
+  font-size: 12px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: #555550;
+  padding-top: 10px;
+  margin-bottom: 10px;
+  font-family: Arial, Calibri, sans-serif;
+  font-weight: 600;
+}
+.section-label::before { content: "// "; color: #2563a8; }
+table.dataTable thead th {
+  background-color: #1a1a18 !important;
+  color: #f0eeea !important;
+  font-size: 11px !important;
+  letter-spacing: 1.5px !important;
+  text-transform: uppercase !important;
+  font-weight: 600 !important;
+  font-family: Arial, Calibri, sans-serif !important;
+  padding: 10px 8px !important;
+}
+table.dataTable tbody td {
+  background-color: #faf8f3 !important;
+  color: #1a1a18 !important;
+  font-size: 12px !important;
+  font-family: Arial, Calibri, sans-serif !important;
+  border-bottom: 1px solid #dedad2 !important;
+  padding: 8px !important;
+}
+table.dataTable tbody tr:nth-child(even) td { background-color: #f2f0eb !important; }
+table.dataTable tbody tr:hover td { background-color: #e8e5de !important; }
+.dataTables_wrapper {
+  background: #ede9e1 !important;
+  padding: 16px !important;
+  border: 1px solid #ccc9c0 !important;
+}
+.dataTables_filter label,
+.dataTables_length label,
+.dataTables_info,
+.dataTables_paginate {
+  color: #333330 !important;
+  font-size: 12px !important;
+  font-family: Arial, Calibri, sans-serif !important;
+}
+.paginate_button { color: #333330 !important; }
+```
+
+Overview 
+=====================================
+
+Row {data-height=520}
+-------------------------------------
+
+### <span class="section-label">CMJ Jump Height — Distribution by Level</span>
+
+```{r jh-box, fig.width=7, fig.height=5}
+plot_data <- df |>
+  filter(!is.na(`jump_height_(imp-mom)_[cm]_mean_cmj`)) |>
+  mutate(hover = sprintf(
+    "Athlete: %s<br>Level: %s<br>Jump Height: %.1f cm<br>Sessions: %d",
+    athlete_id, playing_level,
+    `jump_height_(imp-mom)_[cm]_mean_cmj`, n_sessions))
+
+plot_ly(plot_data,
+        x = ~playing_level,
+        y = ~`jump_height_(imp-mom)_[cm]_mean_cmj`,
+        color = ~playing_level,
+        colors = LEVEL_COLS,
+        type = "box",
+        boxpoints = "outliers",
+        marker = list(size = 4, opacity = 0.5),
+        line = list(width = 1.5),
+        text = ~hover, hoverinfo = "text") |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "", gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    yaxis = list(title = "Jump Height (cm)", gridcolor = COL_BORDER,
+                 linecolor = COL_BORDER),
+    showlegend = FALSE,
+    annotations = list(
+      list(x = 0, y = 1.05, xref = "paper", yref = "paper",
+           text = "HS vs Col: p<0.001 *** | Col vs Pro: p=0.153 ns | HS vs Pro: p<0.001 ***",
+           showarrow = FALSE, font = list(size = 11, color = '#555550'),
+           xanchor = "left")
+    )
+  )
+```
+
+### <span class="section-label">RSI-Modified — Distribution by Level</span>
+
+```{r rsi-box, fig.width=7, fig.height=5}
+plot_data2 <- df |>
+  filter(!is.na(`rsi-modified_[m/s]_mean_cmj`)) |>
+  mutate(hover = sprintf(
+    "Athlete: %s<br>Level: %s<br>RSI-mod: %.3f m/s",
+    athlete_id, playing_level, `rsi-modified_[m/s]_mean_cmj`))
+
+plot_ly(plot_data2,
+        x = ~playing_level,
+        y = ~`rsi-modified_[m/s]_mean_cmj`,
+        color = ~playing_level,
+        colors = LEVEL_COLS,
+        type = "box",
+        boxpoints = "outliers",
+        marker = list(size = 4, opacity = 0.5),
+        line = list(width = 1.5),
+        text = ~hover, hoverinfo = "text") |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "", gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    yaxis = list(title = "RSI-Modified (m/s)", gridcolor = COL_BORDER,
+                 linecolor = COL_BORDER),
+    showlegend = FALSE,
+    annotations = list(
+      list(x = 0, y = 1.05, xref = "paper", yref = "paper",
+           text = "HS vs Col: p<0.001 *** | Col vs Pro: p=0.003 ** | HS vs Pro: p<0.001 ***",
+           showarrow = FALSE, font = list(size = 11, color = '#555550'),
+           xanchor = "left")
+    )
+  )
+```
+
+Row {data-height=520}
+-------------------------------------
+
+### <span class="section-label">Peak Power / Body Mass — Distribution by Level</span>
+
+```{r pp-box, fig.width=7, fig.height=5}
+plot_ly(df |> filter(!is.na(`peak_power_/_bm_[w/kg]_mean_cmj`)),
+        x = ~playing_level,
+        y = ~`peak_power_/_bm_[w/kg]_mean_cmj`,
+        color = ~playing_level, colors = LEVEL_COLS,
+        type = "box", boxpoints = "outliers",
+        marker = list(size = 4, opacity = 0.5),
+        line = list(width = 1.5),
+        text = ~sprintf("Athlete: %s<br>Level: %s<br>Peak Power / Bm: %.1f W",
+                        athlete_id, playing_level, `peak_power_/_bm_[w/kg]_mean_cmj`),
+        hoverinfo = "text") |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "", gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    yaxis = list(title = "Peak Power / BM (W/kg)", gridcolor = COL_BORDER,
+                 linecolor = COL_BORDER),
+    showlegend = FALSE
+  )
+```
+
+### <span class="section-label">Eccentric RFD — Distribution by Level</span>
+
+```{r erfd-box, fig.width=7, fig.height=5}
+plot_ly(df |> filter(!is.na(`eccentric_braking_rfd_[n/s]_mean_cmj`)),
+        x = ~playing_level,
+        y = ~`eccentric_braking_rfd_[n/s]_mean_cmj`,
+        color = ~playing_level, colors = LEVEL_COLS,
+        type = "box", boxpoints = "outliers",
+        marker = list(size = 4, opacity = 0.5),
+        line = list(width = 1.5),
+        text = ~sprintf("Athlete: %s<br>Level: %s<br>Eccentric Braking Rfd: %.1f N/s",
+                        athlete_id, playing_level, `eccentric_braking_rfd_[n/s]_mean_cmj`),
+        hoverinfo = "text") |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "", gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    yaxis = list(title = "Eccentric Braking RFD (N/s)", gridcolor = COL_BORDER,
+                 linecolor = COL_BORDER),
+    showlegend = FALSE,
+    annotations = list(
+      list(x = 0, y = 1.05, xref = "paper", yref = "paper",
+           text = "Note: Pro > College on eRFD (p=0.018*) even though jump height is similar — Pro athletes are faster, not higher",
+           showarrow = FALSE, font = list(size = 11, color = '#555550'),
+           xanchor = "left")
+    )
+  )
+```
+
+Force Production 
+=====================================
+
+Row {data-height=520}
+-------------------------------------
+
+### <span class="section-label">Concentric Peak Force — Distribution by Level</span>
+
+```{r cpf-box, fig.width=7, fig.height=5}
+plot_ly(df |> filter(!is.na(`concentric_peak_force_[n]_mean_cmj`)),
+        x = ~playing_level,
+        y = ~`concentric_peak_force_[n]_mean_cmj`,
+        color = ~playing_level, colors = LEVEL_COLS,
+        type = "box", boxpoints = "outliers",
+        marker = list(size = 4, opacity = 0.5),
+        line = list(width = 1.5),
+        text = ~sprintf("Athlete: %s<br>Level: %s<br>Concentric Peak Force: %.1f N",
+                        athlete_id, playing_level, `concentric_peak_force_[n]_mean_cmj`),
+        hoverinfo = "text") |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "", gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    yaxis = list(title = "Concentric Peak Force (N)", gridcolor = COL_BORDER,
+                 linecolor = COL_BORDER),
+    showlegend = FALSE,
+    annotations = list(
+      list(x = 0, y = 1.05, xref = "paper", yref = "paper",
+           text = "Strongest differentiator across all three levels — r=0.647 (HS vs Col), r=0.186 (Col vs Pro)",
+           showarrow = FALSE, font = list(size = 11, color = '#555550'),
+           xanchor = "left")
+    )
+  )
+```
+
+### <span class="section-label">Lower-Limb Stiffness — Distribution by Level</span>
+
+```{r stiff-box, fig.width=7, fig.height=5}
+plot_ly(df |> filter(!is.na(`lower-limb_stiffness_[n/m]_mean_cmj`)),
+        x = ~playing_level,
+        y = ~`lower-limb_stiffness_[n/m]_mean_cmj`,
+        color = ~playing_level, colors = LEVEL_COLS,
+        type = "box", boxpoints = "outliers",
+        marker = list(size = 4, opacity = 0.5),
+        line = list(width = 1.5),
+        text = ~sprintf("Athlete: %s<br>Level: %s<br>Lower-Limb Stiffness: %.1f N/m",
+                        athlete_id, playing_level, `lower-limb_stiffness_[n/m]_mean_cmj`),
+        hoverinfo = "text") |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "", gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    yaxis = list(title = "Lower-Limb Stiffness (N/m)", gridcolor = COL_BORDER,
+                 linecolor = COL_BORDER),
+    showlegend = FALSE
+  )
+```
+
+Row {data-height=520}
+-------------------------------------
+
+### <span class="section-label">Countermovement Depth — Distribution by Level</span>
+
+```{r depth-box, fig.width=7, fig.height=5}
+plot_ly(df |> filter(!is.na(`countermovement_depth_[cm]_mean_cmj`)),
+        x = ~playing_level,
+        y = ~`countermovement_depth_[cm]_mean_cmj`,
+        color = ~playing_level, colors = LEVEL_COLS,
+        type = "box", boxpoints = "outliers",
+        marker = list(size = 4, opacity = 0.5),
+        line = list(width = 1.5),
+        text = ~sprintf("Athlete: %s<br>Level: %s<br>Countermovement Depth: %.1f cm",
+                        athlete_id, playing_level, `countermovement_depth_[cm]_mean_cmj`),
+        hoverinfo = "text") |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "", gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    yaxis = list(title = "Countermovement Depth (cm)", gridcolor = COL_BORDER,
+                 linecolor = COL_BORDER),
+    showlegend = FALSE
+  )
+```
+
+### <span class="section-label">Concentric Duration — Distribution by Level</span>
+
+```{r cdur-box, fig.width=7, fig.height=5}
+plot_ly(df |> filter(!is.na(`concentric_duration_[ms]_mean_cmj`)),
+        x = ~playing_level,
+        y = ~`concentric_duration_[ms]_mean_cmj`,
+        color = ~playing_level, colors = LEVEL_COLS,
+        type = "box", boxpoints = "outliers",
+        marker = list(size = 4, opacity = 0.5),
+        line = list(width = 1.5),
+        text = ~sprintf("Athlete: %s<br>Level: %s<br>Concentric Duration: %.1f ms",
+                        athlete_id, playing_level, `concentric_duration_[ms]_mean_cmj`),
+        hoverinfo = "text") |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "", gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    yaxis = list(title = "Concentric Duration (ms)", gridcolor = COL_BORDER,
+                 linecolor = COL_BORDER),
+    showlegend = FALSE,
+    annotations = list(
+      list(x = 0, y = 1.05, xref = "paper", yref = "paper",
+           text = "Pro athletes complete concentric phase fastest (267 ms) — HS slowest (294 ms)",
+           showarrow = FALSE, font = list(size = 11, color = '#555550'),
+           xanchor = "left")
+    )
+  )
+```
+
+Percentile Norms 
+=====================================
+
+Row {data-height=550}
+-------------------------------------
+
+### <span class="section-label">Normative Percentiles by Level — All CMJ Metrics</span>
+
+```{r percentile-table}
+pct_tbl <- map_dfr(names(CMJ_METRICS), function(label) {
+  col <- CMJ_METRICS[[label]]
+  pcts <- c(10, 25, 50, 75, 90)
+  map_dfr(levels_order, function(lv) {
+    g <- df |> filter(playing_level == lv) |> pull(!!sym(col)) |> na.omit()
+    if (length(g) < 5) return(NULL)
+    vals <- round(quantile(g, pcts / 100), 2)
+    tibble(Metric = label, Level = lv, N = length(g),
+           P10 = vals[1], P25 = vals[2], P50 = vals[3],
+           P75 = vals[4], P90 = vals[5])
+  })
+})
+
+pct_display <- pct_tbl |>
+  mutate(
+    Level_fmt = case_when(
+      Level == "High School" ~ '<span class="level-hs">High School</span>',
+      Level == "College"     ~ '<span class="level-col">College</span>',
+      Level == "Pro"         ~ '<span class="level-pro">Pro</span>'
+    )
+  ) |>
+  select(Metric, Level = Level_fmt, N, P10, P25, P50, P75, P90)
+
+datatable(
+  pct_display,
+  escape    = FALSE,
+  rownames  = FALSE,
+  extensions = c("Buttons"),
+  options   = list(
+    pageLength = 33,
+    dom        = "Bfrtip",
+    buttons    = list("csv", "excel"),
+    scrollX    = TRUE,
+    columnDefs = list(
+      list(className = "dt-center", targets = c(2, 3, 4, 5, 6, 7))
+    )
+  )
+)
+```
+
+Row {data-height=500}
+-------------------------------------
+
+### <span class="section-label">Group Means Summary — All CMJ Metrics</span>
+
+```{r means-table}
+means_display <- summary_stats |>
+  mutate(
+    Level_fmt = case_when(
+      Level == "High School" ~ '<span class="level-hs">High School</span>',
+      Level == "College"     ~ '<span class="level-col">College</span>',
+      Level == "Pro"         ~ '<span class="level-pro">Pro</span>'
+    ),
+    Mean_SD = sprintf("%.2f ± %.2f", Mean, SD)
+  ) |>
+  select(Metric, Level = Level_fmt, N, `Mean ± SD` = Mean_SD,
+         Median, P25, P75)
+
+datatable(
+  means_display,
+  escape   = FALSE,
+  rownames = FALSE,
+  extensions = c("Buttons"),
+  options  = list(
+    pageLength = 33,
+    dom        = "Bfrtip",
+    buttons    = list("csv", "excel"),
+    scrollX    = TRUE,
+    columnDefs = list(
+      list(className = "dt-center", targets = c(2, 3, 4, 5, 6))
+    )
+  )
+)
+```
+
+IMTP — Force at Time Windows 
+=====================================
+
+Row {data-height=520}
+-------------------------------------
+
+### <span class="section-label">Force at 100 / 150 / 200ms — Grouped Bar by Level</span>
+
+```{r imtp-bar, fig.width=9, fig.height=5}
+# ── Build long-format summary for grouped bar ─────────────────────────────────
+imtp_means <- df |>
+  filter(!is.na(`force_at_100ms_[n]_max_imtp`)) |>
+  group_by(playing_level) |>
+  summarise(
+    `100ms` = mean(`force_at_100ms_[n]_max_imtp`, na.rm = TRUE),
+    `150ms` = mean(`force_at_150ms_[n]_max_imtp`, na.rm = TRUE),
+    `200ms` = mean(`force_at_200ms_[n]_max_imtp`, na.rm = TRUE),
+    n       = n(),
+    .groups = "drop"
+  ) |>
+  pivot_longer(cols = c(`100ms`, `150ms`, `200ms`),
+               names_to = "window", values_to = "force") |>
+  mutate(window = factor(window, levels = c("100ms","150ms","200ms")))
+
+plot_ly(imtp_means,
+        x = ~window,
+        y = ~force,
+        color = ~playing_level,
+        colors = LEVEL_COLS,
+        type = "bar",
+        text = ~sprintf("%s<br>%s: %.0f N", playing_level, window, force),
+        hoverinfo = "text",
+        textposition = "none") |>
+  layout(
+    barmode = "group",
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "Time Window", gridcolor = '#ccc9c0', linecolor = '#ccc9c0'),
+    yaxis = list(title = "Mean Force (N)", gridcolor = '#ccc9c0', linecolor = '#ccc9c0'),
+    legend = list(font = list(size = 12, color = '#1a1a18')),
+    annotations = list(list(
+      x = 0, y = 1.06, xref = "paper", yref = "paper",
+      text = "HS vs College: significant at all windows (p<0.001) | College vs Pro: not significant at any window",
+      showarrow = FALSE, font = list(size = 11, color = '#555550'),
+      xanchor = "left"
+    ))
+  )
+```
+
+### <span class="section-label">Force at Each Window — Box Distribution by Level</span>
+
+```{r imtp-window-box, fig.width=9, fig.height=5}
+# Box plots for each window — user can toggle via legend
+imtp_long <- df |>
+  filter(!is.na(`force_at_100ms_[n]_max_imtp`)) |>
+  select(athlete_id, playing_level,
+         `100ms` = `force_at_100ms_[n]_max_imtp`,
+         `150ms` = `force_at_150ms_[n]_max_imtp`,
+         `200ms` = `force_at_200ms_[n]_max_imtp`) |>
+  pivot_longer(cols = c(`100ms`,`150ms`,`200ms`),
+               names_to = "window", values_to = "force") |>
+  mutate(window = factor(window, levels = c("100ms","150ms","200ms")),
+         group  = paste(playing_level, window))
+
+plot_ly(imtp_long,
+        x = ~window,
+        y = ~force,
+        color = ~playing_level,
+        colors = LEVEL_COLS,
+        type = "box",
+        boxpoints = "outliers",
+        marker = list(size = 3, opacity = 0.4),
+        line = list(width = 1.5),
+        text = ~sprintf("Athlete: %s<br>Level: %s<br>%s: %.0f N",
+                        athlete_id, playing_level, window, force),
+        hoverinfo = "text") |>
+  layout(
+    boxmode = "group",
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "Time Window", gridcolor = '#ccc9c0', linecolor = '#ccc9c0'),
+    yaxis = list(title = "Force (N)", gridcolor = '#ccc9c0', linecolor = '#ccc9c0'),
+    legend = list(font = list(size = 12, color = '#1a1a18'))
+  )
+```
+
+Row {data-height=520}
+-------------------------------------
+
+### <span class="section-label">Force at 100ms — Distribution by Level</span>
+
+```{r imtp-100-box, fig.width=7, fig.height=5}
+plot_ly(df |> filter(!is.na(`force_at_100ms_[n]_max_imtp`)),
+        x = ~playing_level,
+        y = ~`force_at_100ms_[n]_max_imtp`,
+        color = ~playing_level, colors = LEVEL_COLS,
+        type = "box", boxpoints = "outliers",
+        marker = list(size = 4, opacity = 0.5),
+        line = list(width = 1.5),
+        text = ~sprintf("Athlete: %s<br>Level: %s<br>Force @100ms: %.0f N",
+                        athlete_id, playing_level, `force_at_100ms_[n]_max_imtp`),
+        hoverinfo = "text") |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "", gridcolor = '#ccc9c0', linecolor = '#ccc9c0'),
+    yaxis = list(title = "Force at 100ms (N)", gridcolor = '#ccc9c0', linecolor = '#ccc9c0'),
+    showlegend = FALSE,
+    annotations = list(list(
+      x = 0, y = 1.06, xref = "paper", yref = "paper",
+      text = "HS: 1,288 N avg | College: 1,571 N | Pro: 1,645 N — HS vs College gap: +22%",
+      showarrow = FALSE, font = list(size = 11, color = '#555550'),
+      xanchor = "left"
+    ))
+  )
+```
+
+### <span class="section-label">Force at 200ms — Distribution by Level</span>
+
+```{r imtp-200-box, fig.width=7, fig.height=5}
+plot_ly(df |> filter(!is.na(`force_at_200ms_[n]_max_imtp`)),
+        x = ~playing_level,
+        y = ~`force_at_200ms_[n]_max_imtp`,
+        color = ~playing_level, colors = LEVEL_COLS,
+        type = "box", boxpoints = "outliers",
+        marker = list(size = 4, opacity = 0.5),
+        line = list(width = 1.5),
+        text = ~sprintf("Athlete: %s<br>Level: %s<br>Force @200ms: %.0f N",
+                        athlete_id, playing_level, `force_at_200ms_[n]_max_imtp`),
+        hoverinfo = "text") |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "", gridcolor = '#ccc9c0', linecolor = '#ccc9c0'),
+    yaxis = list(title = "Force at 200ms (N)", gridcolor = '#ccc9c0', linecolor = '#ccc9c0'),
+    showlegend = FALSE,
+    annotations = list(list(
+      x = 0, y = 1.06, xref = "paper", yref = "paper",
+      text = "HS: 1,910 N avg | College: 2,383 N | Pro: 2,419 N — College vs Pro gap closes to just +1.5%",
+      showarrow = FALSE, font = list(size = 11, color = '#555550'),
+      xanchor = "left"
+    ))
+  )
+```
+
+Row {data-height=520}
+-------------------------------------
+
+### <span class="section-label">% of Peak IMTP Force Reached at Each Window</span>
+
+```{r pct-peak-bar, fig.width=9, fig.height=5}
+# All levels reach ~40% at 100ms, ~50% at 150ms, ~59% at 200ms
+# The rate of expression is identical — only the absolute ceiling differs
+pct_means <- df |>
+  filter(!is.na(`force_at_100ms_[n]_max_imtp`),
+         !is.na(`peak_vertical_force_[n]_max_imtp`)) |>
+  mutate(
+    pct_100 = `force_at_100ms_[n]_max_imtp` / `peak_vertical_force_[n]_max_imtp` * 100,
+    pct_150 = `force_at_150ms_[n]_max_imtp` / `peak_vertical_force_[n]_max_imtp` * 100,
+    pct_200 = `force_at_200ms_[n]_max_imtp` / `peak_vertical_force_[n]_max_imtp` * 100
+  ) |>
+  group_by(playing_level) |>
+  summarise(`100ms` = mean(pct_100, na.rm = TRUE),
+            `150ms` = mean(pct_150, na.rm = TRUE),
+            `200ms` = mean(pct_200, na.rm = TRUE),
+            .groups = "drop") |>
+  pivot_longer(cols = c(`100ms`,`150ms`,`200ms`),
+               names_to = "window", values_to = "pct") |>
+  mutate(window = factor(window, levels = c("100ms","150ms","200ms")))
+
+plot_ly(pct_means,
+        x = ~window,
+        y = ~pct,
+        color = ~playing_level,
+        colors = LEVEL_COLS,
+        type = "bar",
+        text = ~sprintf("%s — %s: %.1f%% of peak", playing_level, window, pct),
+        hoverinfo = "text",
+        textposition = "none") |>
+  layout(
+    barmode = "group",
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "Time Window", gridcolor = '#ccc9c0', linecolor = '#ccc9c0'),
+    yaxis = list(title = "% of Peak IMTP Force", gridcolor = '#ccc9c0',
+                 linecolor = '#ccc9c0', range = c(0, 80)),
+    legend = list(font = list(size = 12, color = '#1a1a18')),
+    annotations = list(list(
+      x = 0, y = 1.06, xref = "paper", yref = "paper",
+      text = "All three levels reach ~40% at 100ms, ~50% at 150ms, ~59% at 200ms — rate of expression is equal across levels",
+      showarrow = FALSE, font = list(size = 11, color = '#555550'),
+      xanchor = "left"
+    ))
+  )
+```
+
+### <span class="section-label">IMTP Force Window Summary Table</span>
+
+```{r imtp-window-table}
+imtp_tbl <- df |>
+  filter(!is.na(`force_at_100ms_[n]_max_imtp`),
+         !is.na(`peak_vertical_force_[n]_max_imtp`)) |>
+  mutate(
+    pct_100 = `force_at_100ms_[n]_max_imtp` / `peak_vertical_force_[n]_max_imtp` * 100,
+    pct_150 = `force_at_150ms_[n]_max_imtp` / `peak_vertical_force_[n]_max_imtp` * 100,
+    pct_200 = `force_at_200ms_[n]_max_imtp` / `peak_vertical_force_[n]_max_imtp` * 100
+  ) |>
+  group_by(playing_level) |>
+  summarise(
+    N              = n(),
+    `F@100ms (N)`  = round(mean(`force_at_100ms_[n]_max_imtp`, na.rm=TRUE), 0),
+    `F@150ms (N)`  = round(mean(`force_at_150ms_[n]_max_imtp`, na.rm=TRUE), 0),
+    `F@200ms (N)`  = round(mean(`force_at_200ms_[n]_max_imtp`, na.rm=TRUE), 0),
+    `Peak IMTP (N)`= round(mean(`peak_vertical_force_[n]_max_imtp`, na.rm=TRUE), 0),
+    `%Peak @100ms` = round(mean(pct_100, na.rm=TRUE), 1),
+    `%Peak @150ms` = round(mean(pct_150, na.rm=TRUE), 1),
+    `%Peak @200ms` = round(mean(pct_200, na.rm=TRUE), 1),
+    .groups = "drop"
+  ) |>
+  mutate(
+    Level_fmt = case_when(
+      playing_level == "High School" ~
+        '<span style="color:#2563a8;font-weight:700">High School</span>',
+      playing_level == "College" ~
+        '<span style="color:#1a6b3c;font-weight:700">College</span>',
+      playing_level == "Pro" ~
+        '<span style="color:#c0392b;font-weight:700">Pro</span>'
+    )
+  ) |>
+  select(Level = Level_fmt, N, `F@100ms (N)`, `F@150ms (N)`, `F@200ms (N)`,
+         `Peak IMTP (N)`, `%Peak @100ms`, `%Peak @150ms`, `%Peak @200ms`)
+
+datatable(
+  imtp_tbl,
+  escape   = FALSE,
+  rownames = FALSE,
+  options  = list(
+    pageLength = 3,
+    dom        = "t",
+    scrollX    = TRUE,
+    columnDefs = list(list(className = "dt-center", targets = c(1:8)))
+  )
+)
+```

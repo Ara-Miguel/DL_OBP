@@ -1,0 +1,891 @@
+---
+title: "Force Plate — Multi-Test Relationships"
+output:
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: scroll
+    self_contained: true
+    navbar:
+      - { title: "CMJ · SJ · IMTP · Hop Test · 1,162 Athletes · Cross-Test Analysis", align: left }
+---
+
+```{r setup, include=FALSE}
+# =============================================================================
+# DASHBOARD 2 OF 4: Multi-Test Relationships
+# =============================================================================
+# Purpose : Explore relationships between CMJ, SJ, IMTP, and Hop Test metrics.
+#           Key analyses:
+#           - Elasticity Index (CMJ - SJ jump height) by level
+#           - CMJ RSI vs Hop Test RSI
+#           - IMTP peak force vs CMJ/SJ jump height
+#           - IMTP RFD windows (100/150/200ms) vs CMJ performance
+#           - HT active stiffness vs CMJ stiffness
+#
+# Note    : Plyo Pushup (_pp) columns excluded — upper body test, set aside.
+# Run after: cleaning pipeline
+# =============================================================================
+
+library(flexdashboard)
+library(tidyverse)
+library(DT)
+library(plotly)
+
+PROJECT_DIR <- here::here()
+
+
+df <- read_csv(
+  file.path(PROJECT_DIR, "hp_obp_combined.csv"),
+  show_col_types = FALSE
+) |>
+  mutate(
+    playing_level = factor(playing_level,
+                           levels = c("High School", "College", "Pro")),
+    elasticity_index = `jump_height_(imp-mom)_[cm]_mean_cmj` -
+                       `jump_height_(imp-mom)_[cm]_mean_sj`
+  )
+
+COL_INK    <- "#1a1a18"
+COL_BG     <- "#f2f0eb"
+COL_PAPER  <- "#faf8f3"
+COL_BORDER <- "#ccc9c0"
+COL_MUTED  <- "#8a8880"
+COL_HS     <- "#2563a8"
+COL_COL    <- "#1a6b3c"
+COL_PRO    <- "#c0392b"
+LEVEL_COLS <- c("High School" = COL_HS, "College" = COL_COL, "Pro" = COL_PRO)
+
+n_cmj_sj   <- sum(!is.na(df$elasticity_index))
+n_cmj_imtp <- sum(!is.na(df$`peak_vertical_force_[n]_max_imtp`) &
+                  !is.na(df$`jump_height_(imp-mom)_[cm]_mean_cmj`))
+n_cmj_ht   <- sum(!is.na(df$`best_rsi_(jump_height/contact_time)_[m/s]_mean_ht`) &
+                  !is.na(df$`rsi-modified_[m/s]_mean_cmj`))
+
+# ── Data quality thresholds ───────────────────────────────────────────────────
+CMJ_JH_HARD  <- 75;    CMJ_JH_FLAG  <- 60
+SJ_JH_HARD   <- 65;    SJ_JH_FLAG   <- 55
+HT_JH_HARD   <- 55;    HT_JH_FLAG   <- 45
+HT_STIFF_SENTINEL <- 99999.99; HT_STIFF_HARD <- 200000; HT_STIFF_FLAG <- 100000
+
+df <- df |>
+  mutate(
+    `jump_height_(imp-mom)_[cm]_mean_cmj` = if_else(
+      `jump_height_(imp-mom)_[cm]_mean_cmj` > CMJ_JH_HARD, NA_real_,
+      `jump_height_(imp-mom)_[cm]_mean_cmj`),
+    `jump_height_(imp-mom)_[cm]_mean_sj` = if_else(
+      `jump_height_(imp-mom)_[cm]_mean_sj` > SJ_JH_HARD, NA_real_,
+      `jump_height_(imp-mom)_[cm]_mean_sj`),
+    `best_jump_height_(flight_time)_[cm]_mean_ht` = if_else(
+      `best_jump_height_(flight_time)_[cm]_mean_ht` > HT_JH_HARD, NA_real_,
+      `best_jump_height_(flight_time)_[cm]_mean_ht`),
+    `best_active_stiffness_[n/m]_mean_ht` = if_else(
+      round(`best_active_stiffness_[n/m]_mean_ht`, 2) == HT_STIFF_SENTINEL |
+        `best_active_stiffness_[n/m]_mean_ht` > HT_STIFF_HARD, NA_real_,
+      `best_active_stiffness_[n/m]_mean_ht`),
+    # Recompute elasticity index after thresholding
+    elasticity_index = `jump_height_(imp-mom)_[cm]_mean_cmj` -
+                       `jump_height_(imp-mom)_[cm]_mean_sj`
+  )
+
+flag_cmj_jh   <- function(x) case_when(x > CMJ_JH_FLAG   ~ "flagged", !is.na(x) ~ "valid", TRUE ~ NA_character_)
+flag_sj_jh    <- function(x) case_when(x > SJ_JH_FLAG    ~ "flagged", !is.na(x) ~ "valid", TRUE ~ NA_character_)
+flag_ht_jh    <- function(x) case_when(x > HT_JH_FLAG    ~ "flagged", !is.na(x) ~ "valid", TRUE ~ NA_character_)
+flag_ht_stiff <- function(x) case_when(x > HT_STIFF_FLAG ~ "flagged", !is.na(x) ~ "valid", TRUE ~ NA_character_)
+```
+
+```{css, echo=FALSE}
+body, .dashboard-container {
+  background-color: #faf8f3 !important;
+  font-family: Arial, Calibri, sans-serif !important;
+  color: #1a1a18 !important;
+}
+.navbar {
+  background-color: #1a1a18 !important;
+  border-bottom: 3px solid #1a6b3c !important;
+}
+.navbar-brand, .navbar-nav li a {
+  font-size: 11px !important;
+  letter-spacing: 2px !important;
+  text-transform: uppercase !important;
+  color: #cccccc !important;
+}
+.chart-wrapper, .chart-stage {
+  background-color: #faf8f3 !important;
+}
+.value-box { border-radius: 0 !important; border: none !important; }
+.value-box .value {
+  font-family: Arial, Calibri, sans-serif !important;
+  font-size: 30px !important;
+  color: #ffffff !important;
+}
+.value-box .caption {
+  letter-spacing: 2px !important;
+  text-transform: uppercase !important;
+  font-size: 10px !important;
+  color: #ffffff !important;
+}
+.section-label {
+  font-size: 12px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: #555550;
+  padding-top: 10px;
+  margin-bottom: 10px;
+  font-family: Arial, Calibri, sans-serif;
+  font-weight: 600;
+}
+.section-label::before { content: "// "; color: #1a6b3c; }
+table.dataTable thead th {
+  background-color: #1a1a18 !important;
+  color: #f0eeea !important;
+  font-size: 11px !important;
+  letter-spacing: 1.5px !important;
+  text-transform: uppercase !important;
+  font-weight: 600 !important;
+  font-family: Arial, Calibri, sans-serif !important;
+  padding: 10px 8px !important;
+}
+table.dataTable tbody td {
+  background-color: #faf8f3 !important;
+  color: #1a1a18 !important;
+  font-size: 12px !important;
+  font-family: Arial, Calibri, sans-serif !important;
+  border-bottom: 1px solid #dedad2 !important;
+  padding: 8px !important;
+}
+table.dataTable tbody tr:nth-child(even) td { background-color: #f2f0eb !important; }
+table.dataTable tbody tr:hover td { background-color: #e8e5de !important; }
+.dataTables_wrapper {
+  background: #ede9e1 !important;
+  padding: 16px !important;
+  border: 1px solid #ccc9c0 !important;
+}
+.dataTables_filter label,
+.dataTables_length label,
+.dataTables_info,
+.dataTables_paginate {
+  color: #333330 !important;
+  font-size: 12px !important;
+  font-family: Arial, Calibri, sans-serif !important;
+}
+.paginate_button { color: #333330 !important; }
+```
+
+CMJ vs SJ
+=====================================
+
+Row {data-height=520}
+-------------------------------------
+
+### <span class="section-label">Elasticity Index (CMJ − SJ Jump Height) by Level</span>
+
+```{r elasticity-box, fig.width=7, fig.height=5}
+# Elasticity index = CMJ JH minus SJ JH
+# Positive = athlete benefits from stretch-shortening cycle
+# Higher values = more elastic / reactive athlete
+
+el_data <- df |> filter(!is.na(elasticity_index))
+
+plot_ly(el_data,
+        x = ~playing_level,
+        y = ~elasticity_index,
+        color = ~playing_level, colors = LEVEL_COLS,
+        type = "box", boxpoints = "outliers",
+        marker = list(size = 4, opacity = 0.5),
+        line = list(width = 1.5),
+        text = ~sprintf("Athlete: %s<br>Level: %s<br>CMJ: %.1f cm<br>SJ: %.1f cm<br>Index: %.2f cm",
+                        athlete_id, playing_level,
+                        `jump_height_(imp-mom)_[cm]_mean_cmj`,
+                        `jump_height_(imp-mom)_[cm]_mean_sj`,
+                        elasticity_index),
+        hoverinfo = "text") |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "", gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    yaxis = list(title = "Elasticity Index (cm)", gridcolor = COL_BORDER,
+                 linecolor = COL_BORDER,
+                 zeroline = TRUE, zerolinecolor = COL_BORDER),
+    showlegend = FALSE,
+    annotations = list(list(
+      x = 0, y = 1.05, xref = "paper", yref = "paper",
+      text = "HS vs Col: p<0.001 *** | Col vs Pro: ns | HS vs Pro: p=0.004 ** — College athletes use SSC more effectively than HS",
+      showarrow = FALSE, font = list(size = 11, color = '#555550'),
+      xanchor = "left"
+    ))
+  )
+```
+
+### <span class="section-label">CMJ vs SJ Jump Height — Scatter by Level</span>
+
+```{r cmj-sj-scatter, fig.width=7, fig.height=5}
+sj_data <- df |>
+  filter(!is.na(`jump_height_(imp-mom)_[cm]_mean_cmj`),
+         !is.na(`jump_height_(imp-mom)_[cm]_mean_sj`))
+
+# Add diagonal reference line (CMJ = SJ, elasticity = 0)
+plot_ly() |>
+  add_trace(
+    data = sj_data,
+    x = ~`jump_height_(imp-mom)_[cm]_mean_sj`,
+    y = ~`jump_height_(imp-mom)_[cm]_mean_cmj`,
+    color = ~playing_level, colors = LEVEL_COLS,
+    type = "scatter", mode = "markers",
+    marker = list(size = 5, opacity = 0.45),
+    text = ~sprintf("Athlete: %s<br>Level: %s<br>SJ: %.1f cm<br>CMJ: %.1f cm<br>Index: %.2f",
+                    athlete_id, playing_level,
+                    `jump_height_(imp-mom)_[cm]_mean_sj`,
+                    `jump_height_(imp-mom)_[cm]_mean_cmj`,
+                    elasticity_index),
+    hoverinfo = "text"
+  ) |>
+  add_segments(
+    x = 15, xend = 65, y = 15, yend = 65,
+    line = list(color = COL_MUTED, dash = "dot", width = 1),
+    showlegend = FALSE, inherit = FALSE
+  ) |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "SJ Jump Height (cm)", gridcolor = COL_BORDER,
+                 linecolor = COL_BORDER),
+    yaxis = list(title = "CMJ Jump Height (cm)", gridcolor = COL_BORDER,
+                 linecolor = COL_BORDER),
+    legend = list(font = list(size = 12, color = '#1a1a18')),
+    annotations = list(list(
+      x = 0, y = 1.05, xref = "paper", yref = "paper",
+      text = "Points above the diagonal line = athlete benefits from stretch-shortening cycle",
+      showarrow = FALSE, font = list(size = 11, color = '#555550'),
+      xanchor = "left"
+    ))
+  )
+```
+
+CMJ vs IMTP
+=====================================
+
+Row {data-height=520}
+-------------------------------------
+
+### <span class="section-label">IMTP Peak Force vs CMJ Jump Height (r = 0.451)</span>
+
+```{r imtp-cmj-scatter, fig.width=7, fig.height=5}
+imtp_data <- df |>
+  filter(!is.na(`peak_vertical_force_[n]_max_imtp`),
+         !is.na(`jump_height_(imp-mom)_[cm]_mean_cmj`))
+
+plot_ly(imtp_data,
+        x = ~`peak_vertical_force_[n]_max_imtp`,
+        y = ~`jump_height_(imp-mom)_[cm]_mean_cmj`,
+        color = ~playing_level, colors = LEVEL_COLS,
+        type = "scatter", mode = "markers",
+        marker = list(size = 5, opacity = 0.45),
+        text = ~sprintf("Athlete: %s<br>Level: %s<br>IMTP PVF: %.0f N<br>CMJ JH: %.1f cm",
+                        athlete_id, playing_level,
+                        `peak_vertical_force_[n]_max_imtp`,
+                        `jump_height_(imp-mom)_[cm]_mean_cmj`),
+        hoverinfo = "text") |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "IMTP Peak Vertical Force (N)",
+                 gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    yaxis = list(title = "CMJ Jump Height (cm)",
+                 gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    legend = list(font = list(size = 12, color = '#1a1a18')),
+    annotations = list(list(
+      x = 0, y = 1.05, xref = "paper", yref = "paper",
+      text = "Moderate relationship — maximal isometric strength partially explains CMJ performance",
+      showarrow = FALSE, font = list(size = 11, color = '#555550'),
+      xanchor = "left"
+    ))
+  )
+```
+
+### <span class="section-label">IMTP RFD Windows vs CMJ Jump Height</span>
+
+```{r imtp-rfd-scatter, fig.width=7, fig.height=5}
+# Force at 200ms is the strongest predictor (r=0.307)
+rfd_data <- df |>
+  filter(!is.na(`force_at_200ms_[n]_max_imtp`),
+         !is.na(`jump_height_(imp-mom)_[cm]_mean_cmj`))
+
+plot_ly() |>
+  add_trace(
+    data = rfd_data |> filter(!is.na(`force_at_100ms_[n]_max_imtp`)),
+    x = ~`force_at_100ms_[n]_max_imtp`,
+    y = ~`jump_height_(imp-mom)_[cm]_mean_cmj`,
+    name = "Force @ 100ms",
+    type = "scatter", mode = "markers",
+    marker = list(size = 4, opacity = 0.4, color = COL_HS)
+  ) |>
+  add_trace(
+    data = rfd_data |> filter(!is.na(`force_at_150ms_[n]_max_imtp`)),
+    x = ~`force_at_150ms_[n]_max_imtp`,
+    y = ~`jump_height_(imp-mom)_[cm]_mean_cmj`,
+    name = "Force @ 150ms",
+    type = "scatter", mode = "markers",
+    marker = list(size = 4, opacity = 0.4, color = COL_COL)
+  ) |>
+  add_trace(
+    data = rfd_data,
+    x = ~`force_at_200ms_[n]_max_imtp`,
+    y = ~`jump_height_(imp-mom)_[cm]_mean_cmj`,
+    name = "Force @ 200ms",
+    type = "scatter", mode = "markers",
+    marker = list(size = 4, opacity = 0.4, color = COL_PRO)
+  ) |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "IMTP Force at Time Window (N)",
+                 gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    yaxis = list(title = "CMJ Jump Height (cm)",
+                 gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    legend = list(font = list(size = 12, color = '#1a1a18')),
+    annotations = list(list(
+      x = 0, y = 1.05, xref = "paper", yref = "paper",
+      text = "r=0.196 @100ms → r=0.258 @150ms → r=0.307 @200ms — later force windows predict CMJ better",
+      showarrow = FALSE, font = list(size = 11, color = '#555550'),
+      xanchor = "left"
+    ))
+  )
+```
+
+CMJ vs Hop Test
+=====================================
+
+Row {data-height=520}
+-------------------------------------
+
+### <span class="section-label">CMJ RSI-Modified vs Hop Test RSI (r = 0.670)</span>
+
+```{r rsi-comparison, fig.width=7, fig.height=5}
+ht_data <- df |>
+  filter(!is.na(`rsi-modified_[m/s]_mean_cmj`),
+         !is.na(`best_rsi_(jump_height/contact_time)_[m/s]_mean_ht`))
+
+plot_ly(ht_data,
+        x = ~`rsi-modified_[m/s]_mean_cmj`,
+        y = ~`best_rsi_(jump_height/contact_time)_[m/s]_mean_ht`,
+        color = ~playing_level, colors = LEVEL_COLS,
+        type = "scatter", mode = "markers",
+        marker = list(size = 5, opacity = 0.45),
+        text = ~sprintf("Athlete: %s<br>Level: %s<br>CMJ RSI: %.3f<br>HT RSI: %.3f",
+                        athlete_id, playing_level,
+                        `rsi-modified_[m/s]_mean_cmj`,
+                        `best_rsi_(jump_height/contact_time)_[m/s]_mean_ht`),
+        hoverinfo = "text") |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "CMJ RSI-Modified (m/s)",
+                 gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    yaxis = list(title = "Hop Test RSI (m/s)",
+                 gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    legend = list(font = list(size = 12, color = '#1a1a18')),
+    annotations = list(list(
+      x = 0, y = 1.05, xref = "paper", yref = "paper",
+      text = "Strong relationship (r=0.670) — reactive ability is consistent across tasks",
+      showarrow = FALSE, font = list(size = 11, color = '#555550'),
+      xanchor = "left"
+    ))
+  )
+```
+
+### <span class="section-label">HT Active Stiffness vs CMJ Stiffness (r = 0.126)</span>
+
+```{r stiffness-comparison, fig.width=7, fig.height=5}
+# ── Hard removals (sentinel + >200k N/m) already applied globally in setup ────
+# This chunk only splits remaining valid data into clean vs flagged (>100k N/m)
+stiff_raw <- df |>
+  filter(!is.na(`best_active_stiffness_[n/m]_mean_ht`),
+         !is.na(`lower-limb_stiffness_[n/m]_mean_cmj`)) |>
+  mutate(
+    ht_stiff     = `best_active_stiffness_[n/m]_mean_ht`,
+    stiff_status = if_else(ht_stiff > HT_STIFF_FLAG, "flagged", "valid")
+  )
+
+n_flagged <- sum(stiff_raw$stiff_status == "flagged")
+n_valid   <- sum(stiff_raw$stiff_status == "valid")
+
+stiff_valid   <- stiff_raw |> filter(stiff_status == "valid")
+stiff_flagged <- stiff_raw |> filter(stiff_status == "flagged")
+
+plot_ly() |>
+  # Valid points — color by level
+  add_trace(
+    data = stiff_valid,
+    x = ~`lower-limb_stiffness_[n/m]_mean_cmj`,
+    y = ~ht_stiff,
+    color = ~playing_level, colors = LEVEL_COLS,
+    type = "scatter", mode = "markers",
+    marker = list(size = 5, opacity = 0.45),
+    text = ~sprintf(
+      "Athlete: %s<br>Level: %s<br>CMJ Stiffness: %.0f N/m<br>HT Stiffness: %.0f N/m",
+      athlete_id, playing_level,
+      `lower-limb_stiffness_[n/m]_mean_cmj`, ht_stiff),
+    hoverinfo = "text",
+    name = ~playing_level
+  ) |>
+  # Flagged points — amber, labeled
+  add_trace(
+    data = stiff_flagged,
+    x = ~`lower-limb_stiffness_[n/m]_mean_cmj`,
+    y = ~ht_stiff,
+    type = "scatter", mode = "markers",
+    marker = list(size = 7, opacity = 0.85,
+                  color = "#c07a1a",
+                  symbol = "diamond",
+                  line = list(color = "#1a1a18", width = 1)),
+    text = ~sprintf(
+      "Athlete: %s<br>Level: %s<br>CMJ Stiffness: %.0f N/m<br>HT Stiffness: %.0f N/m<br><b>⚠ High — verify data (>100,000 N/m)</b>",
+      athlete_id, playing_level,
+      `lower-limb_stiffness_[n/m]_mean_cmj`, ht_stiff),
+    hoverinfo = "text",
+    name = "⚠ High Stiffness (verify)",
+    showlegend = TRUE
+  ) |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "CMJ Lower-Limb Stiffness (N/m)",
+                 gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    yaxis = list(title = "Hop Test Active Stiffness (N/m)",
+                 gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    legend = list(font = list(size = 11, color = '#1a1a18')),
+    annotations = list(list(
+      x = 0, y = 1.06, xref = "paper", yref = "paper",
+      text = sprintf(
+        "Weak relationship (r=0.126) — stiffness is task-specific | 6 artifacts removed globally (sentinel/implausible) | %d flagged >100k N/m",
+        n_flagged),
+      showarrow = FALSE, font = list(size = 11, color = '#555550'),
+      xanchor = "left"
+    ))
+  )
+```
+
+Row {data-height=520}
+-------------------------------------
+
+### <span class="section-label">Hop Test Jump Height vs CMJ Jump Height</span>
+
+```{r ht-cmj-jh, fig.width=7, fig.height=5}
+jh_ht <- df |>
+  filter(!is.na(`best_jump_height_(flight_time)_[cm]_mean_ht`),
+         !is.na(`jump_height_(imp-mom)_[cm]_mean_cmj`))
+
+r_val <- cor(jh_ht$`best_jump_height_(flight_time)_[cm]_mean_ht`,
+             jh_ht$`jump_height_(imp-mom)_[cm]_mean_cmj`,
+             use = "complete.obs")
+
+plot_ly(jh_ht,
+        x = ~`jump_height_(imp-mom)_[cm]_mean_cmj`,
+        y = ~`best_jump_height_(flight_time)_[cm]_mean_ht`,
+        color = ~playing_level, colors = LEVEL_COLS,
+        type = "scatter", mode = "markers",
+        marker = list(size = 5, opacity = 0.45),
+        text = ~sprintf("Athlete: %s<br>Level: %s<br>CMJ JH: %.1f cm<br>HT JH: %.1f cm",
+                        athlete_id, playing_level,
+                        `jump_height_(imp-mom)_[cm]_mean_cmj`,
+                        `best_jump_height_(flight_time)_[cm]_mean_ht`),
+        hoverinfo = "text") |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "CMJ Jump Height (cm)",
+                 gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    yaxis = list(title = "Hop Test Jump Height (cm)",
+                 gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    legend = list(font = list(size = 12, color = '#1a1a18')),
+    annotations = list(list(
+      x = 0, y = 1.05, xref = "paper", yref = "paper",
+      text = sprintf("r = %.3f — maximal jump height is consistent across CMJ and HT", r_val),
+      showarrow = FALSE, font = list(size = 11, color = '#555550'),
+      xanchor = "left"
+    ))
+  )
+```
+
+### <span class="section-label">IMTP Net Peak Force vs SJ Jump Height (r = 0.430)</span>
+
+```{r imtp-sj, fig.width=7, fig.height=5}
+sj_imtp <- df |>
+  filter(!is.na(`net_peak_vertical_force_[n]_max_imtp`),
+         !is.na(`jump_height_(imp-mom)_[cm]_mean_sj`))
+
+plot_ly(sj_imtp,
+        x = ~`net_peak_vertical_force_[n]_max_imtp`,
+        y = ~`jump_height_(imp-mom)_[cm]_mean_sj`,
+        color = ~playing_level, colors = LEVEL_COLS,
+        type = "scatter", mode = "markers",
+        marker = list(size = 5, opacity = 0.45),
+        text = ~sprintf("Athlete: %s<br>Level: %s<br>IMTP Net PVF: %.0f N<br>SJ JH: %.1f cm",
+                        athlete_id, playing_level,
+                        `net_peak_vertical_force_[n]_max_imtp`,
+                        `jump_height_(imp-mom)_[cm]_mean_sj`),
+        hoverinfo = "text") |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "IMTP Net Peak Vertical Force (N)",
+                 gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    yaxis = list(title = "SJ Jump Height (cm)",
+                 gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    legend = list(font = list(size = 12, color = '#1a1a18')),
+    annotations = list(list(
+      x = 0, y = 1.05, xref = "paper", yref = "paper",
+      text = "Maximal isometric strength (IMTP) moderately predicts squat jump — no SSC contribution in SJ",
+      showarrow = FALSE, font = list(size = 11, color = '#555550'),
+      xanchor = "left"
+    ))
+  )
+```
+
+SSC Profiling
+=====================================
+
+```{r ssc-setup, include=FALSE}
+# ── Pre-compute SSC profiles ──────────────────────────────────────────────────
+ssc_data <- df |>
+  filter(!is.na(elasticity_index),
+         !is.na(`peak_power_/_bm_[w/kg]_mean_cmj`)) |>
+  mutate(
+    ei_med  = median(elasticity_index, na.rm = TRUE),
+    pp_med  = median(`peak_power_/_bm_[w/kg]_mean_cmj`, na.rm = TRUE),
+    profile = case_when(
+      elasticity_index >= ei_med & `peak_power_/_bm_[w/kg]_mean_cmj` >= pp_med ~ "High EI / High PP",
+      elasticity_index >= ei_med & `peak_power_/_bm_[w/kg]_mean_cmj` <  pp_med ~ "High EI / Low PP",
+      elasticity_index <  ei_med & `peak_power_/_bm_[w/kg]_mean_cmj` >= pp_med ~ "Low EI / High PP",
+      elasticity_index <  ei_med & `peak_power_/_bm_[w/kg]_mean_cmj` <  pp_med ~ "Low EI / Low PP"
+    ),
+    profile = factor(profile, levels = c("High EI / High PP","High EI / Low PP",
+                                         "Low EI / High PP","Low EI / Low PP"))
+  )
+
+PROFILE_COLS <- c(
+  "High EI / High PP" = "#1a6b3c",
+  "High EI / Low PP"  = "#2563a8",
+  "Low EI / High PP"  = "#c07a1a",
+  "Low EI / Low PP"   = "#8a8880"
+)
+
+ei_med_val <- median(ssc_data$elasticity_index, na.rm = TRUE)
+pp_med_val <- median(ssc_data$`peak_power_/_bm_[w/kg]_mean_cmj`, na.rm = TRUE)
+
+# Athletes with true SSC deficit (SJ >= CMJ)
+ssc_deficit <- df |>
+  filter(!is.na(elasticity_index)) |>
+  filter(elasticity_index <= 0)
+```
+
+Row {data-height=560}
+-------------------------------------
+
+### <span class="section-label">SSC Utilization vs Peak Power/BM — Athlete Profiling</span>
+
+```{r ssc-quad, fig.width=9, fig.height=6}
+plot_ly() |>
+  add_trace(
+    data   = ssc_data,
+    x      = ~elasticity_index,
+    y      = ~`peak_power_/_bm_[w/kg]_mean_cmj`,
+    color  = ~profile,
+    colors = PROFILE_COLS,
+    symbol = ~playing_level,
+    symbols = c("High School" = "circle", "College" = "square", "Pro" = "diamond"),
+    type   = "scatter", mode = "markers",
+    marker = list(size = 6, opacity = 0.55),
+    text   = ~sprintf(
+      "Athlete: %s<br>Level: %s<br>Elasticity Index: %.2f cm<br>PP/BM: %.1f W/kg<br>Profile: %s<br>CMJ: %.1f cm | SJ: %.1f cm",
+      athlete_id, playing_level, elasticity_index,
+      `peak_power_/_bm_[w/kg]_mean_cmj`, profile,
+      `jump_height_(imp-mom)_[cm]_mean_cmj`,
+      `jump_height_(imp-mom)_[cm]_mean_sj`),
+    hoverinfo = "text"
+  ) |>
+  add_segments(
+    x = ei_med_val, xend = ei_med_val, y = 20, yend = 90,
+    line = list(color = '#aaa9a0', dash = "dot", width = 1),
+    showlegend = FALSE, inherit = FALSE
+  ) |>
+  add_segments(
+    x = -10, xend = 18, y = pp_med_val, yend = pp_med_val,
+    line = list(color = '#aaa9a0', dash = "dot", width = 1),
+    showlegend = FALSE, inherit = FALSE
+  ) |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "Elasticity Index — CMJ minus SJ (cm)",
+                 gridcolor = '#ccc9c0', linecolor = '#ccc9c0',
+                 zeroline = TRUE, zerolinecolor = '#ccc9c0'),
+    yaxis = list(title = "Peak Power / Body Mass (W/kg)",
+                 gridcolor = '#ccc9c0', linecolor = '#ccc9c0'),
+    legend = list(font = list(size = 11, color = '#1a1a18')),
+    annotations = list(
+      list(x = 0, y = 1.06, xref = "paper", yref = "paper",
+           text = "Dotted lines = dataset medians | Left of zero = SJ ≥ CMJ (true SSC deficit) | Symbol = level | Color = training profile",
+           showarrow = FALSE, font = list(size = 11, color = '#555550'), xanchor = "left"),
+      list(x = 0.98, y = 0.98, xref = "paper", yref = "paper",
+           text = "HIGH EI / HIGH PP", showarrow = FALSE,
+           font = list(size = 11, color = '#1a6b3c', family = 'Arial, Calibri'),
+           xanchor = "right", yanchor = "top"),
+      list(x = 0.02, y = 0.98, xref = "paper", yref = "paper",
+           text = "LOW EI / HIGH PP\nReactive Training Target",
+           showarrow = FALSE,
+           font = list(size = 11, color = '#c07a1a', family = 'Arial, Calibri'),
+           xanchor = "left", yanchor = "top"),
+      list(x = 0.98, y = 0.02, xref = "paper", yref = "paper",
+           text = "HIGH EI / LOW PP", showarrow = FALSE,
+           font = list(size = 11, color = '#2563a8', family = 'Arial, Calibri'),
+           xanchor = "right", yanchor = "bottom"),
+      list(x = 0.02, y = 0.02, xref = "paper", yref = "paper",
+           text = "LOW EI / LOW PP\nGeneral Development", showarrow = FALSE,
+           font = list(size = 11, color = '#8a8880', family = 'Arial, Calibri'),
+           xanchor = "left", yanchor = "bottom")
+    )
+  )
+```
+
+Row {data-height=520}
+-------------------------------------
+
+### <span class="section-label">Elasticity Index % Difference — CMJ vs SJ by Level</span>
+
+```{r ei-pct, fig.width=7, fig.height=5}
+# % improvement CMJ brings over SJ
+ei_pct <- df |>
+  filter(!is.na(`jump_height_(imp-mom)_[cm]_mean_cmj`),
+         !is.na(`jump_height_(imp-mom)_[cm]_mean_sj`)) |>
+  mutate(pct_diff = (`jump_height_(imp-mom)_[cm]_mean_cmj` -
+                     `jump_height_(imp-mom)_[cm]_mean_sj`) /
+                    `jump_height_(imp-mom)_[cm]_mean_sj` * 100)
+
+plot_ly(ei_pct,
+        x = ~playing_level,
+        y = ~pct_diff,
+        color = ~playing_level, colors = LEVEL_COLS,
+        type = "box", boxpoints = "outliers",
+        marker = list(size = 4, opacity = 0.5),
+        line = list(width = 1.5),
+        text = ~sprintf("Athlete: %s<br>Level: %s<br>CMJ: %.1f cm<br>SJ: %.1f cm<br>SSC Benefit: %+.1f%%",
+                        athlete_id, playing_level,
+                        `jump_height_(imp-mom)_[cm]_mean_cmj`,
+                        `jump_height_(imp-mom)_[cm]_mean_sj`,
+                        pct_diff),
+        hoverinfo = "text") |>
+  add_segments(x = 0.5, xend = 3.5, y = 0, yend = 0,
+               line = list(color = '#aaa9a0', dash = "dot", width = 1),
+               showlegend = FALSE, inherit = FALSE) |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "", gridcolor = '#ccc9c0', linecolor = '#ccc9c0'),
+    yaxis = list(title = "SSC Benefit — CMJ over SJ (%)",
+                 gridcolor = '#ccc9c0', linecolor = '#ccc9c0',
+                 zeroline = TRUE, zerolinecolor = '#ccc9c0'),
+    showlegend = FALSE,
+    annotations = list(list(
+      x = 0, y = 1.06, xref = "paper", yref = "paper",
+      text = "HS: +13.1% avg | College: +13.7% | Pro: +12.4% — athletes below zero have true SSC deficit",
+      showarrow = FALSE, font = list(size = 11, color = '#555550'), xanchor = "left"
+    ))
+  )
+```
+
+### <span class="section-label">Profile Count by Level</span>
+
+```{r profile-table}
+profile_tbl <- ssc_data |>
+  count(profile, playing_level) |>
+  pivot_wider(names_from = playing_level, values_from = n, values_fill = 0) |>
+  mutate(
+    Total = `High School` + College + Pro,
+    profile_fmt = case_when(
+      profile == "High EI / High PP" ~
+        '<span style="color:#1a6b3c;font-weight:700">▲ High EI / High PP</span>',
+      profile == "High EI / Low PP" ~
+        '<span style="color:#2563a8;font-weight:700">→ High EI / Low PP</span>',
+      profile == "Low EI / High PP" ~
+        '<span style="color:#c07a1a;font-weight:700">⚡ Low EI / High PP — Reactive Target</span>',
+      profile == "Low EI / Low PP" ~
+        '<span style="color:#8a8880;font-weight:700">▼ Low EI / Low PP — General Development</span>'
+    )
+  ) |>
+  select(Profile = profile_fmt, `High School`, College, Pro, Total)
+
+datatable(
+  profile_tbl,
+  escape = FALSE, rownames = FALSE,
+  options = list(
+    pageLength = 4, dom = "t", scrollX = TRUE,
+    columnDefs = list(list(className = "dt-center", targets = c(1,2,3,4)))
+  )
+)
+```
+
+Asymmetry
+=====================================
+
+Row {data-height=520}
+-------------------------------------
+
+### <span class="section-label">Eccentric Deceleration Asymmetry — CMJ by Level</span>
+
+```{r ecc-asym, fig.width=7, fig.height=5}
+plot_ly(df |> filter(!is.na(`eccentric_deceleration_impulse_(asymmetry)_[%_l,r]_mean_cmj`)),
+        x = ~playing_level,
+        y = ~`eccentric_deceleration_impulse_(asymmetry)_[%_l,r]_mean_cmj`,
+        color = ~playing_level, colors = LEVEL_COLS,
+        type = "box", boxpoints = "outliers",
+        marker = list(size = 4, opacity = 0.5),
+        line = list(width = 1.5),
+        text = ~sprintf("Athlete: %s<br>Level: %s<br>Ecc Decel Asymmetry: %.1f%%",
+                        athlete_id, playing_level,
+                        `eccentric_deceleration_impulse_(asymmetry)_[%_l,r]_mean_cmj`),
+        hoverinfo = "text") |>
+  add_segments(x = 0.5, xend = 3.5, y = 10,  yend = 10,
+               line = list(color = '#c0392b', dash = "dot", width = 1),
+               showlegend = FALSE, inherit = FALSE) |>
+  add_segments(x = 0.5, xend = 3.5, y = -10, yend = -10,
+               line = list(color = '#c0392b', dash = "dot", width = 1),
+               showlegend = FALSE, inherit = FALSE) |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "", gridcolor = '#ccc9c0', linecolor = '#ccc9c0'),
+    yaxis = list(title = "Eccentric Deceleration Asymmetry (% L,R)",
+                 gridcolor = '#ccc9c0', linecolor = '#ccc9c0',
+                 zeroline = TRUE, zerolinecolor = '#ccc9c0'),
+    showlegend = FALSE,
+    annotations = list(list(
+      x = 0, y = 1.06, xref = "paper", yref = "paper",
+      text = "Red dashed lines = ±10% threshold | 39% of all athletes exceed this | HS most affected (abs mean 10.3%)",
+      showarrow = FALSE, font = list(size = 11, color = '#555550'), xanchor = "left"
+    ))
+  )
+```
+
+### <span class="section-label">CMJ Stiffness Asymmetry by Level</span>
+
+```{r stiff-asym, fig.width=7, fig.height=5}
+plot_ly(df |> filter(!is.na(`cmj_stiffness_asymmetry_[%_l,r]_mean_cmj`)),
+        x = ~playing_level,
+        y = ~`cmj_stiffness_asymmetry_[%_l,r]_mean_cmj`,
+        color = ~playing_level, colors = LEVEL_COLS,
+        type = "box", boxpoints = "outliers",
+        marker = list(size = 4, opacity = 0.5),
+        line = list(width = 1.5),
+        text = ~sprintf("Athlete: %s<br>Level: %s<br>Stiffness Asymmetry: %.1f%%",
+                        athlete_id, playing_level,
+                        `cmj_stiffness_asymmetry_[%_l,r]_mean_cmj`),
+        hoverinfo = "text") |>
+  add_segments(x = 0.5, xend = 3.5, y = 10,  yend = 10,
+               line = list(color = '#c0392b', dash = "dot", width = 1),
+               showlegend = FALSE, inherit = FALSE) |>
+  add_segments(x = 0.5, xend = 3.5, y = -10, yend = -10,
+               line = list(color = '#c0392b', dash = "dot", width = 1),
+               showlegend = FALSE, inherit = FALSE) |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "", gridcolor = '#ccc9c0', linecolor = '#ccc9c0'),
+    yaxis = list(title = "CMJ Stiffness Asymmetry (% L,R)",
+                 gridcolor = '#ccc9c0', linecolor = '#ccc9c0',
+                 zeroline = TRUE, zerolinecolor = '#ccc9c0'),
+    showlegend = FALSE,
+    annotations = list(list(
+      x = 0, y = 1.06, xref = "paper", yref = "paper",
+      text = "17.3% of athletes exceed ±10% stiffness asymmetry | HS highest (abs mean 6.17%) | Pro lowest (5.54%)",
+      showarrow = FALSE, font = list(size = 11, color = '#555550'), xanchor = "left"
+    ))
+  )
+```
+
+Row {data-height=520}
+-------------------------------------
+
+### <span class="section-label">SJ Concentric Impulse Asymmetry (Phase 1) by Level</span>
+
+```{r sj-asym-p1, fig.width=7, fig.height=5}
+plot_ly(df |> filter(!is.na(`p1_concentric_impulse_asymmetry_[%_l,r]_mean_sj`)),
+        x = ~playing_level,
+        y = ~`p1_concentric_impulse_asymmetry_[%_l,r]_mean_sj`,
+        color = ~playing_level, colors = LEVEL_COLS,
+        type = "box", boxpoints = "outliers",
+        marker = list(size = 4, opacity = 0.5),
+        line = list(width = 1.5),
+        text = ~sprintf("Athlete: %s<br>Level: %s<br>SJ P1 Asymmetry: %.1f%%",
+                        athlete_id, playing_level,
+                        `p1_concentric_impulse_asymmetry_[%_l,r]_mean_sj`),
+        hoverinfo = "text") |>
+  add_segments(x = 0.5, xend = 3.5, y = 10,  yend = 10,
+               line = list(color = '#c0392b', dash = "dot", width = 1),
+               showlegend = FALSE, inherit = FALSE) |>
+  add_segments(x = 0.5, xend = 3.5, y = -10, yend = -10,
+               line = list(color = '#c0392b', dash = "dot", width = 1),
+               showlegend = FALSE, inherit = FALSE) |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "", gridcolor = '#ccc9c0', linecolor = '#ccc9c0'),
+    yaxis = list(title = "SJ Concentric Impulse Asymmetry Phase 1 (% L,R)",
+                 gridcolor = '#ccc9c0', linecolor = '#ccc9c0',
+                 zeroline = TRUE, zerolinecolor = '#ccc9c0'),
+    showlegend = FALSE,
+    annotations = list(list(
+      x = 0, y = 1.06, xref = "paper", yref = "paper",
+      text = "28.6% of athletes exceed ±10% | SJ removes the SSC — asymmetry here reflects raw concentric limb difference",
+      showarrow = FALSE, font = list(size = 11, color = '#555550'), xanchor = "left"
+    ))
+  )
+```
+
+### <span class="section-label">Asymmetry Summary — % Athletes Exceeding ±10% Threshold</span>
+
+```{r asym-summary-table}
+asym_metrics <- list(
+  "Ecc Decel Asymmetry (CMJ)"     = "eccentric_deceleration_impulse_(asymmetry)_[%_l,r]_mean_cmj",
+  "CMJ Stiffness Asymmetry"       = "cmj_stiffness_asymmetry_[%_l,r]_mean_cmj",
+  "CMJ Conc Impulse P1 Asymmetry" = "p1_concentric_impulse_asymmetry_[%_l,r]_mean_cmj",
+  "CMJ Conc Impulse P2 Asymmetry" = "p2_concentric_impulse_asymmetry_[%_l,r]_mean_cmj",
+  "SJ Conc Impulse P1 Asymmetry"  = "p1_concentric_impulse_asymmetry_[%_l,r]_mean_sj",
+  "SJ Conc Impulse P2 Asymmetry"  = "p2_concentric_impulse_asymmetry_[%_l,r]_mean_sj"
+)
+
+levels_order <- c("High School", "College", "Pro")
+
+asym_tbl <- map_dfr(names(asym_metrics), function(label) {
+  col <- asym_metrics[[label]]
+  map_dfr(c("High School", "College", "Pro", "All"), function(lv) {
+    g <- if (lv == "All") df[[col]] else df[[col]][df$playing_level == lv]
+    g <- na.omit(g)
+    tibble(
+      Metric    = label,
+      Level     = lv,
+      N         = length(g),
+      `Abs Mean (%)` = round(mean(abs(g)), 1),
+      `> ±10% (%)` = round(mean(abs(g) > 10) * 100, 1)
+    )
+  })
+}) |>
+  mutate(Level_fmt = case_when(
+    Level == "High School" ~ '<span style="color:#2563a8;font-weight:700">High School</span>',
+    Level == "College"     ~ '<span style="color:#1a6b3c;font-weight:700">College</span>',
+    Level == "Pro"         ~ '<span style="color:#c0392b;font-weight:700">Pro</span>',
+    Level == "All"         ~ '<span style="color:#1a1a18;font-weight:700">All</span>'
+  )) |>
+  select(Metric, Level = Level_fmt, N, `Abs Mean (%)`, `> ±10% (%)`)
+
+datatable(
+  asym_tbl,
+  escape = FALSE, rownames = FALSE,
+  extensions = c("Buttons"),
+  options = list(
+    pageLength = 28, dom = "Bfrtip",
+    buttons = list("csv", "excel"),
+    scrollX = TRUE,
+    columnDefs = list(list(className = "dt-center", targets = c(2,3,4)))
+  )
+)
+```

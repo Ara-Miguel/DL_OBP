@@ -1,0 +1,567 @@
+---
+title: "Force Plate — Longitudinal Subgroup"
+output:
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: scroll
+    self_contained: true
+    navbar:
+      - { title: "176 Athletes · 3+ Sessions · First vs Last · Change Over Time", align: left }
+---
+
+```{r setup, include=FALSE}
+# =============================================================================
+# DASHBOARD 4 OF 4: Longitudinal Subgroup
+# =============================================================================
+# Purpose : Focused analysis of the 176 athletes with 3+ test sessions.
+#           Key analyses:
+#           - Session count distribution by level
+#           - Jump height change from first to last session
+#           - RSI-modified change over time
+#           - Individual athlete trajectories for key metrics
+#           - Avg change by level: JH, RSI, PP/BM, eRFD
+#
+# Input   : hp_obp_longitudinal.csv, hp_obp_changes.csv
+# Note    : This is a subgroup — 176 of 1,162 total athletes
+# Run after: cleaning pipeline
+# =============================================================================
+
+library(flexdashboard)
+library(tidyverse)
+library(DT)
+library(plotly)
+
+PROCESSED_DIR <- "/Users/aramimac/Desktop/DL-OBP"
+
+
+df_long <- read_csv(file.path(PROCESSED_DIR, "hp_obp_longitudinal.csv"),
+                    show_col_types = FALSE) |>
+  mutate(
+    playing_level = factor(playing_level, levels = c("High School","College","Pro")),
+    test_date     = as.Date(test_date)
+  )
+
+df_chg <- read_csv(file.path(PROCESSED_DIR, "hp_obp_changes.csv"),
+                   show_col_types = FALSE) |>
+  mutate(playing_level = factor(playing_level, levels = c("High School","College","Pro")))
+
+COL_INK    <- "#1a1a18"
+COL_BG     <- "#f2f0eb"
+COL_PAPER  <- "#faf8f3"
+COL_BORDER <- "#ccc9c0"
+COL_MUTED  <- "#8a8880"
+COL_HS     <- "#2563a8"
+COL_COL    <- "#1a6b3c"
+COL_PRO    <- "#c0392b"
+LEVEL_COLS <- c("High School" = COL_HS, "College" = COL_COL, "Pro" = COL_PRO)
+
+n_total  <- n_distinct(df_long$athlete_id)
+n_hs     <- df_long |> filter(playing_level == "High School") |> pull(athlete_id) |> n_distinct()
+n_col    <- df_long |> filter(playing_level == "College")     |> pull(athlete_id) |> n_distinct()
+n_pro    <- df_long |> filter(playing_level == "Pro")         |> pull(athlete_id) |> n_distinct()
+n_rows   <- nrow(df_long)
+
+# ── Data quality thresholds ───────────────────────────────────────────────────
+CMJ_JH_HARD <- 75; HT_JH_HARD <- 55
+
+apply_thresholds <- function(d) {
+  d |> mutate(
+    `jump_height_(imp-mom)_[cm]_mean_cmj` = if_else(
+      `jump_height_(imp-mom)_[cm]_mean_cmj` > CMJ_JH_HARD, NA_real_,
+      `jump_height_(imp-mom)_[cm]_mean_cmj`)
+  )
+}
+
+df_long <- apply_thresholds(df_long)
+# Note: CMJ JH threshold (75 cm) removes 0 athletes — df_chg requires no mutation
+
+# ── Mean session-by-session trajectories ─────────────────────────────────────
+traj_jh <- df_long |>
+  filter(!is.na(`jump_height_(imp-mom)_[cm]_mean_cmj`)) |>
+  group_by(playing_level, session_num) |>
+  summarise(mean_jh = mean(`jump_height_(imp-mom)_[cm]_mean_cmj`, na.rm = TRUE),
+            se_jh   = sd(`jump_height_(imp-mom)_[cm]_mean_cmj`, na.rm = TRUE) /
+                      sqrt(n()),
+            n = n(), .groups = "drop") |>
+  filter(n >= 5)  # only show sessions with enough athletes
+
+traj_rsi <- df_long |>
+  filter(!is.na(`rsi-modified_[m/s]_mean_cmj`)) |>
+  group_by(playing_level, session_num) |>
+  summarise(mean_rsi = mean(`rsi-modified_[m/s]_mean_cmj`, na.rm = TRUE),
+            se_rsi   = sd(`rsi-modified_[m/s]_mean_cmj`, na.rm = TRUE) /
+                       sqrt(n()),
+            n = n(), .groups = "drop") |>
+  filter(n >= 5)
+
+traj_pp <- df_long |>
+  filter(!is.na(`peak_power_/_bm_[w/kg]_mean_cmj`)) |>
+  group_by(playing_level, session_num) |>
+  summarise(mean_pp = mean(`peak_power_/_bm_[w/kg]_mean_cmj`, na.rm = TRUE),
+            n = n(), .groups = "drop") |>
+  filter(n >= 5)
+
+traj_erfd <- df_long |>
+  filter(!is.na(`eccentric_braking_rfd_[n/s]_mean_cmj`)) |>
+  group_by(playing_level, session_num) |>
+  summarise(mean_erfd = mean(`eccentric_braking_rfd_[n/s]_mean_cmj`, na.rm = TRUE),
+            n = n(), .groups = "drop") |>
+  filter(n >= 5)
+```
+
+```{css, echo=FALSE}
+body, .dashboard-container {
+  background-color: #faf8f3 !important;
+  font-family: Arial, Calibri, sans-serif !important;
+  color: #1a1a18 !important;
+}
+.navbar {
+  background-color: #1a1a18 !important;
+  border-bottom: 3px solid #6b3ca8 !important;
+}
+.navbar-brand, .navbar-nav li a {
+  font-size: 11px !important;
+  letter-spacing: 2px !important;
+  text-transform: uppercase !important;
+  color: #cccccc !important;
+}
+.chart-wrapper, .chart-stage {
+  background-color: #faf8f3 !important;
+}
+.value-box { border-radius: 0 !important; border: none !important; }
+.value-box .value {
+  font-family: Arial, Calibri, sans-serif !important;
+  font-size: 30px !important;
+  color: #ffffff !important;
+}
+.value-box .caption {
+  letter-spacing: 2px !important;
+  text-transform: uppercase !important;
+  font-size: 10px !important;
+  color: #ffffff !important;
+}
+.section-label {
+  font-size: 12px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: #555550;
+  padding-top: 10px;
+  margin-bottom: 10px;
+  font-family: Arial, Calibri, sans-serif;
+  font-weight: 600;
+}
+.section-label::before { content: "// "; color: #6b3ca8; }
+table.dataTable thead th {
+  background-color: #1a1a18 !important;
+  color: #f0eeea !important;
+  font-size: 11px !important;
+  letter-spacing: 1.5px !important;
+  text-transform: uppercase !important;
+  font-weight: 600 !important;
+  font-family: Arial, Calibri, sans-serif !important;
+  padding: 10px 8px !important;
+}
+table.dataTable tbody td {
+  background-color: #faf8f3 !important;
+  color: #1a1a18 !important;
+  font-size: 12px !important;
+  font-family: Arial, Calibri, sans-serif !important;
+  border-bottom: 1px solid #dedad2 !important;
+  padding: 8px !important;
+}
+table.dataTable tbody tr:nth-child(even) td { background-color: #f2f0eb !important; }
+table.dataTable tbody tr:hover td { background-color: #e8e5de !important; }
+.dataTables_wrapper {
+  background: #ede9e1 !important;
+  padding: 16px !important;
+  border: 1px solid #ccc9c0 !important;
+}
+.dataTables_filter label,
+.dataTables_length label,
+.dataTables_info,
+.dataTables_paginate {
+  color: #333330 !important;
+  font-size: 12px !important;
+  font-family: Arial, Calibri, sans-serif !important;
+}
+.paginate_button { color: #333330 !important; }
+```
+
+Session Overview 
+=====================================
+
+Row {data-height=480}
+-------------------------------------
+
+### <span class="section-label">Session Count Distribution by Level</span>
+
+```{r session-dist, fig.width=7, fig.height=5}
+sess_counts <- df_long |>
+  group_by(athlete_id, playing_level) |>
+  summarise(sessions = max(session_num), .groups = "drop")
+
+plot_ly(sess_counts,
+        x = ~sessions,
+        color = ~playing_level, colors = LEVEL_COLS,
+        type = "histogram",
+        nbinsx = 8,
+        opacity = 0.8,
+        barmode = "group") |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "Number of Sessions", gridcolor = COL_BORDER,
+                 linecolor = COL_BORDER, dtick = 1),
+    yaxis = list(title = "Number of Athletes", gridcolor = COL_BORDER,
+                 linecolor = COL_BORDER),
+    legend = list(font = list(size = 12, color = '#1a1a18')),
+    barmode = "group"
+  )
+```
+
+### <span class="section-label">Days Between First and Last Session</span>
+
+```{r days-span, fig.width=7, fig.height=5}
+plot_ly(df_chg,
+        x = ~playing_level,
+        y = ~days_span,
+        color = ~playing_level, colors = LEVEL_COLS,
+        type = "box", boxpoints = "outliers",
+        marker = list(size = 4, opacity = 0.5),
+        line = list(width = 1.5),
+        text = ~sprintf("Athlete: %s<br>Sessions: %d<br>Days span: %d",
+                        athlete_id, n_sessions, days_span),
+        hoverinfo = "text") |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "", gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    yaxis = list(title = "Days Between First and Last Session",
+                 gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    showlegend = FALSE
+  )
+```
+
+Trajectories 
+=====================================
+
+Row {data-height=520}
+-------------------------------------
+
+### <span class="section-label">Mean Jump Height by Session Number</span>
+
+```{r jh-traj, fig.width=7, fig.height=5}
+plot_ly() |>
+  add_trace(data = traj_jh |> filter(playing_level == "High School"),
+            x = ~session_num, y = ~mean_jh, name = "High School",
+            type = "scatter", mode = "lines+markers",
+            line = list(color = COL_HS, width = 2),
+            marker = list(color = COL_HS, size = 7),
+            error_y = list(type = "data", array = ~se_jh, visible = TRUE,
+                           color = COL_HS, thickness = 1),
+            text = ~sprintf("HS Session %d<br>Mean JH: %.1f cm<br>N: %d",
+                            session_num, mean_jh, n),
+            hoverinfo = "text") |>
+  add_trace(data = traj_jh |> filter(playing_level == "College"),
+            x = ~session_num, y = ~mean_jh, name = "College",
+            type = "scatter", mode = "lines+markers",
+            line = list(color = COL_COL, width = 2),
+            marker = list(color = COL_COL, size = 7),
+            error_y = list(type = "data", array = ~se_jh, visible = TRUE,
+                           color = COL_COL, thickness = 1),
+            text = ~sprintf("College Session %d<br>Mean JH: %.1f cm<br>N: %d",
+                            session_num, mean_jh, n),
+            hoverinfo = "text") |>
+  add_trace(data = traj_jh |> filter(playing_level == "Pro"),
+            x = ~session_num, y = ~mean_jh, name = "Pro",
+            type = "scatter", mode = "lines+markers",
+            line = list(color = COL_PRO, width = 2),
+            marker = list(color = COL_PRO, size = 7),
+            error_y = list(type = "data", array = ~se_jh, visible = TRUE,
+                           color = COL_PRO, thickness = 1),
+            text = ~sprintf("Pro Session %d<br>Mean JH: %.1f cm<br>N: %d",
+                            session_num, mean_jh, n),
+            hoverinfo = "text") |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "Session Number", gridcolor = COL_BORDER,
+                 linecolor = COL_BORDER, dtick = 1),
+    yaxis = list(title = "Mean Jump Height (cm)", gridcolor = COL_BORDER,
+                 linecolor = COL_BORDER),
+    legend = list(font = list(size = 12, color = '#1a1a18')),
+    annotations = list(list(
+      x = 0, y = 1.05, xref = "paper", yref = "paper",
+      text = "Error bars = ±1 SE | Only sessions with ≥5 athletes shown",
+      showarrow = FALSE, font = list(size = 11, color = '#555550'),
+      xanchor = "left"
+    ))
+  )
+```
+
+### <span class="section-label">Mean RSI-Modified by Session Number</span>
+
+```{r rsi-traj, fig.width=7, fig.height=5}
+plot_ly() |>
+  add_trace(data = traj_rsi |> filter(playing_level == "High School"),
+            x = ~session_num, y = ~mean_rsi, name = "High School",
+            type = "scatter", mode = "lines+markers",
+            line = list(color = COL_HS, width = 2),
+            marker = list(color = COL_HS, size = 7),
+            error_y = list(type = "data", array = ~se_rsi, visible = TRUE,
+                           color = COL_HS, thickness = 1)) |>
+  add_trace(data = traj_rsi |> filter(playing_level == "College"),
+            x = ~session_num, y = ~mean_rsi, name = "College",
+            type = "scatter", mode = "lines+markers",
+            line = list(color = COL_COL, width = 2),
+            marker = list(color = COL_COL, size = 7),
+            error_y = list(type = "data", array = ~se_rsi, visible = TRUE,
+                           color = COL_COL, thickness = 1)) |>
+  add_trace(data = traj_rsi |> filter(playing_level == "Pro"),
+            x = ~session_num, y = ~mean_rsi, name = "Pro",
+            type = "scatter", mode = "lines+markers",
+            line = list(color = COL_PRO, width = 2),
+            marker = list(color = COL_PRO, size = 7),
+            error_y = list(type = "data", array = ~se_rsi, visible = TRUE,
+                           color = COL_PRO, thickness = 1)) |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "Session Number", gridcolor = COL_BORDER,
+                 linecolor = COL_BORDER, dtick = 1),
+    yaxis = list(title = "Mean RSI-Modified (m/s)", gridcolor = COL_BORDER,
+                 linecolor = COL_BORDER),
+    legend = list(font = list(size = 12, color = '#1a1a18'))
+  )
+```
+
+Row {data-height=520}
+-------------------------------------
+
+### <span class="section-label">Mean Peak Power/BM by Session Number</span>
+
+```{r pp-traj, fig.width=7, fig.height=5}
+plot_ly() |>
+  add_trace(data = traj_pp |> filter(playing_level == "High School"),
+            x = ~session_num, y = ~mean_pp, name = "High School",
+            type = "scatter", mode = "lines+markers",
+            line = list(color = COL_HS, width = 2),
+            marker = list(color = COL_HS, size = 7)) |>
+  add_trace(data = traj_pp |> filter(playing_level == "College"),
+            x = ~session_num, y = ~mean_pp, name = "College",
+            type = "scatter", mode = "lines+markers",
+            line = list(color = COL_COL, width = 2),
+            marker = list(color = COL_COL, size = 7)) |>
+  add_trace(data = traj_pp |> filter(playing_level == "Pro"),
+            x = ~session_num, y = ~mean_pp, name = "Pro",
+            type = "scatter", mode = "lines+markers",
+            line = list(color = COL_PRO, width = 2),
+            marker = list(color = COL_PRO, size = 7)) |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "Session Number", gridcolor = COL_BORDER,
+                 linecolor = COL_BORDER, dtick = 1),
+    yaxis = list(title = "Mean Peak Power / BM (W/kg)", gridcolor = COL_BORDER,
+                 linecolor = COL_BORDER),
+    legend = list(font = list(size = 12, color = '#1a1a18'))
+  )
+```
+
+### <span class="section-label">Mean Eccentric RFD by Session Number</span>
+
+```{r erfd-traj, fig.width=7, fig.height=5}
+plot_ly() |>
+  add_trace(data = traj_erfd |> filter(playing_level == "High School"),
+            x = ~session_num, y = ~mean_erfd, name = "High School",
+            type = "scatter", mode = "lines+markers",
+            line = list(color = COL_HS, width = 2),
+            marker = list(color = COL_HS, size = 7)) |>
+  add_trace(data = traj_erfd |> filter(playing_level == "College"),
+            x = ~session_num, y = ~mean_erfd, name = "College",
+            type = "scatter", mode = "lines+markers",
+            line = list(color = COL_COL, width = 2),
+            marker = list(color = COL_COL, size = 7)) |>
+  add_trace(data = traj_erfd |> filter(playing_level == "Pro"),
+            x = ~session_num, y = ~mean_erfd, name = "Pro",
+            type = "scatter", mode = "lines+markers",
+            line = list(color = COL_PRO, width = 2),
+            marker = list(color = COL_PRO, size = 7)) |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "Session Number", gridcolor = COL_BORDER,
+                 linecolor = COL_BORDER, dtick = 1),
+    yaxis = list(title = "Mean Eccentric RFD (N/s)", gridcolor = COL_BORDER,
+                 linecolor = COL_BORDER),
+    legend = list(font = list(size = 12, color = '#1a1a18'))
+  )
+```
+
+First vs Last 
+=====================================
+
+Row {data-height=520}
+-------------------------------------
+
+### <span class="section-label">Jump Height Change (First → Last Session) by Level</span>
+
+```{r jh-change, fig.width=7, fig.height=5}
+jh_chg <- df_chg |>
+  filter(!is.na(`jump_height_(imp-mom)_[cm]_mean_cmj_change`))
+
+plot_ly(jh_chg,
+        x = ~playing_level,
+        y = ~`jump_height_(imp-mom)_[cm]_mean_cmj_change`,
+        color = ~playing_level, colors = LEVEL_COLS,
+        type = "box", boxpoints = "all",
+        jitter = 0.3, pointpos = 0,
+        marker = list(size = 5, opacity = 0.5),
+        line = list(width = 1.5),
+        text = ~sprintf("Athlete: %s<br>Level: %s<br>JH Δ: %+.2f cm<br>Sessions: %d<br>Days: %d",
+                        athlete_id, playing_level,
+                        `jump_height_(imp-mom)_[cm]_mean_cmj_change`,
+                        n_sessions, days_span),
+        hoverinfo = "text") |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "", gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    yaxis = list(title = "JH Change (cm)", gridcolor = COL_BORDER,
+                 linecolor = COL_BORDER,
+                 zeroline = TRUE, zerolinecolor = COL_BORDER),
+    showlegend = FALSE,
+    shapes = list(list(
+      type = "line",
+      x0 = 0, x1 = 1, xref = "paper",
+      y0 = 0, y1 = 0, yref = "y",
+      line = list(color = COL_MUTED, dash = "dot", width = 1)
+    )),
+    annotations = list(list(
+      x = 0, y = 1.05, xref = "paper", yref = "paper",
+      text = "HS: +1.86 cm avg | College: +1.02 cm | Pro: +0.39 cm — HS shows greatest absolute change",
+      showarrow = FALSE, font = list(size = 11, color = '#555550'),
+      xanchor = "left"
+    ))
+  )
+```
+
+### <span class="section-label">RSI-Modified Change (First → Last Session) by Level</span>
+
+```{r rsi-change, fig.width=7, fig.height=5}
+rsi_chg <- df_chg |>
+  filter(!is.na(`rsi-modified_[m/s]_mean_cmj_change`))
+
+plot_ly(rsi_chg,
+        x = ~playing_level,
+        y = ~`rsi-modified_[m/s]_mean_cmj_change`,
+        color = ~playing_level, colors = LEVEL_COLS,
+        type = "box", boxpoints = "all",
+        jitter = 0.3, pointpos = 0,
+        marker = list(size = 5, opacity = 0.5),
+        line = list(width = 1.5),
+        text = ~sprintf("Athlete: %s<br>Level: %s<br>RSI Δ: %+.3f m/s",
+                        athlete_id, playing_level,
+                        `rsi-modified_[m/s]_mean_cmj_change`),
+        hoverinfo = "text") |>
+  layout(
+    paper_bgcolor = '#faf8f3', plot_bgcolor = '#faf8f3',
+    font = list(family = 'Arial, Calibri, sans-serif', color = '#1a1a18', size = 12),
+    xaxis = list(title = "", gridcolor = COL_BORDER, linecolor = COL_BORDER),
+    yaxis = list(title = "RSI-Modified Change (m/s)", gridcolor = COL_BORDER,
+                 linecolor = COL_BORDER),
+    showlegend = FALSE,
+    shapes = list(list(
+      type = "line",
+      x0 = 0, x1 = 1, xref = "paper",
+      y0 = 0, y1 = 0, yref = "y",
+      line = list(color = COL_MUTED, dash = "dot", width = 1)
+    )),
+    annotations = list(list(
+      x = 0, y = 1.05, xref = "paper", yref = "paper",
+      text = "HS: +0.065 | College: +0.056 | Pro: +0.031 — all levels improving, HS greatest gains",
+      showarrow = FALSE, font = list(size = 11, color = '#555550'),
+      xanchor = "left"
+    ))
+  )
+```
+
+Change Summary Table 
+=====================================
+
+Row {data-height=600}
+-------------------------------------
+
+### <span class="section-label">Individual Athlete Change Summary — First to Last Session</span>
+
+```{r change-table}
+chg_display <- df_chg |>
+  mutate(
+    Level_fmt = case_when(
+      playing_level == "High School" ~
+        '<span style="color:#2563a8;font-weight:700">High School</span>',
+      playing_level == "College" ~
+        '<span style="color:#1a6b3c;font-weight:700">College</span>',
+      playing_level == "Pro" ~
+        '<span style="color:#c0392b;font-weight:700">Pro</span>'
+    ),
+    jh_fmt = ifelse(
+      is.na(`jump_height_(imp-mom)_[cm]_mean_cmj_change`), "—",
+      sprintf('<span style="color:%s;font-weight:600">%s%.2f cm</span>',
+              ifelse(`jump_height_(imp-mom)_[cm]_mean_cmj_change` >= 0,
+                     "#1a6b3c", "#c0392b"),
+              ifelse(`jump_height_(imp-mom)_[cm]_mean_cmj_change` >= 0, "+", ""),
+              `jump_height_(imp-mom)_[cm]_mean_cmj_change`)
+    ),
+    rsi_fmt = ifelse(
+      is.na(`rsi-modified_[m/s]_mean_cmj_change`), "—",
+      sprintf('<span style="color:%s;font-weight:600">%s%.3f</span>',
+              ifelse(`rsi-modified_[m/s]_mean_cmj_change` >= 0,
+                     "#1a6b3c", "#c0392b"),
+              ifelse(`rsi-modified_[m/s]_mean_cmj_change` >= 0, "+", ""),
+              `rsi-modified_[m/s]_mean_cmj_change`)
+    ),
+    pp_fmt = ifelse(
+      is.na(`peak_power_/_bm_[w/kg]_mean_cmj_change`), "—",
+      sprintf('<span style="color:%s;font-weight:600">%s%.2f W/kg</span>',
+              ifelse(`peak_power_/_bm_[w/kg]_mean_cmj_change` >= 0,
+                     "#1a6b3c", "#c0392b"),
+              ifelse(`peak_power_/_bm_[w/kg]_mean_cmj_change` >= 0, "+", ""),
+              `peak_power_/_bm_[w/kg]_mean_cmj_change`)
+    ),
+    erfd_fmt = ifelse(
+      is.na(`eccentric_braking_rfd_[n/s]_mean_cmj_change`), "—",
+      sprintf('<span style="color:%s;font-weight:600">%s%.0f N/s</span>',
+              ifelse(`eccentric_braking_rfd_[n/s]_mean_cmj_change` >= 0,
+                     "#1a6b3c", "#c0392b"),
+              ifelse(`eccentric_braking_rfd_[n/s]_mean_cmj_change` >= 0, "+", ""),
+              `eccentric_braking_rfd_[n/s]_mean_cmj_change`)
+    )
+  ) |>
+  select(
+    `Athlete`    = athlete_id,
+    `Level`      = Level_fmt,
+    `Sessions`   = n_sessions,
+    `Days Span`  = days_span,
+    `JH Δ`      = jh_fmt,
+    `RSI Δ`     = rsi_fmt,
+    `PP/BM Δ`   = pp_fmt,
+    `eRFD Δ`    = erfd_fmt
+  )
+
+datatable(
+  chg_display,
+  escape    = FALSE,
+  rownames  = FALSE,
+  extensions = c("Buttons"),
+  options   = list(
+    pageLength = 20,
+    dom        = "Bfrtip",
+    buttons    = list("csv", "excel"),
+    scrollX    = TRUE,
+    columnDefs = list(
+      list(className = "dt-center", targets = c(2, 3, 4, 5, 6, 7))
+    )
+  )
+)
+```
